@@ -1,0 +1,83 @@
+####################################
+# General
+####################################
+.env
+.env.*
+*.log
+*.tmp
+*.swp
+
+####################################
+# OS Files
+####################################
+.DS_Store
+Thumbs.db
+
+####################################
+# Python / Backend
+####################################
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# SQLite database
+*.db
+*.sqlite3
+
+####################################
+# FastAPI / Backend workspace
+####################################
+backend/workspace/
+backend/.cache/
+backend/tmp/
+
+####################################
+# Node / Frontend
+####################################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+####################################
+# Next.js build output
+####################################
+.next/
+out/
+dist/
+build/
+
+####################################
+# Frontend environment variables
+####################################
+frontend/.env
+frontend/.env.*
+client/.env
+client/.env.*
+
+####################################
+# IDE / Editor
+####################################
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+####################################
+# Git
+####################################
+*.orig
