@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.analyze import router as analyze_router
+from app.api.structure import router as structure_router
 
 app = FastAPI(title="CodeExplorer")
 
@@ -14,3 +15,4 @@ app.add_middleware(
 )
 
 app.include_router(analyze_router, prefix="/api")
+app.include_router(structure_router, prefix="/api")

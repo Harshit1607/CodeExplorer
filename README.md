@@ -73,7 +73,98 @@ CodeExplorer solves this by:
 
 ---
 
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.9+
+- Node.js 18+
+- Git
+
+### Backend Setup
+
+1. Navigate to the server directory:
+```bash
+cd server
+```
+
+2. Create and activate virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Start the FastAPI server:
+```bash
+uvicorn app.main:app --reload
+```
+
+The backend will be available at [http://localhost:8000](http://localhost:8000)
+
+### Frontend Setup
+
+1. Navigate to the client directory:
+```bash
+cd client
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Configure environment variables:
+```bash
+cp .env.example .env.local
+```
+
+4. Start the Next.js development server:
+```bash
+npm run dev
+```
+
+The dashboard will be available at [http://localhost:3000](http://localhost:3000)
+
+### Usage
+
+1. Open the dashboard at [http://localhost:3000](http://localhost:3000)
+2. Enter a public GitHub repository URL (e.g., `https://github.com/facebook/react`)
+3. Click "Analyze Repository"
+4. Browse the results across different tabs:
+   - **Overview**: Key statistics and README preview
+   - **File Structure**: Interactive file tree
+   - **Languages**: Code distribution by language
+   - **Dependencies**: Project dependencies
+   - **Key Files**: Important files and entry points
+
+---
+
+## 📁 Project Structure
+
+```
+CodeExplorer/
+├── client/                 # Next.js frontend dashboard
+│   ├── app/               # Next.js app directory
+│   ├── components/        # React components
+│   └── package.json       # Frontend dependencies
+├── server/                # FastAPI backend
+│   ├── app/
+│   │   ├── api/          # API endpoints
+│   │   ├── services/     # Business logic
+│   │   └── main.py       # FastAPI app
+│   └── requirements.txt  # Backend dependencies
+└── docs/                 # Documentation
+```
+
+---
+
 ## 📄 Documentation
 
 - [Product Requirements Document](docs/PRD.md)
-- [Technical Specification](docs/TECHNICAL_SPEC.md)
+- [Technical Specification](docs/TechSpecs.md)
+- [Client README](client/README.md)

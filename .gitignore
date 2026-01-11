@@ -38,8 +38,11 @@ htmlcov/
 *.sqlite3
 
 ####################################
-# FastAPI / serevr workspace
+# FastAPI / server workspace
 ####################################
+server/workspace/
+server/.cache/
+server/tmp/
 serevr/workspace/
 serevr/.cache/
 serevr/tmp/
@@ -64,10 +67,10 @@ build/
 ####################################
 # client environment variables
 ####################################
-client/.env
-client/.env.*
-client/.env
-client/.env.*
+client/.env.local
+client/.env.production.local
+client/.env.development.local
+client/.env.test.local
 
 ####################################
 # IDE / Editor
