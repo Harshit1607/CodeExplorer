@@ -1,6 +1,7 @@
-
 import { useState } from 'react';
 import OverviewSection from './OverviewSection';
+import QuickStartGuide from './QuickStartGuide';
+import ComplexityAnalysis from './ComplexityAnalysis';
 import FileTreeSection from './FileTreeSection';
 import LanguagesSection from './LanguagesSection';
 import DependenciesSection from './DependenciesSection';
@@ -11,9 +12,11 @@ interface AnalysisResultsProps {
 }
 
 export default function AnalysisResults({ data }: AnalysisResultsProps) {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('quickstart');
 
   const tabs = [
+    { id: 'quickstart', label: 'Quick Start', icon: '🚀' },
+    { id: 'complexity', label: 'Complexity', icon: '🎯' },
     { id: 'overview', label: 'Overview', icon: '📊' },
     { id: 'structure', label: 'File Structure', icon: '📁' },
     { id: 'languages', label: 'Languages', icon: '💻' },
@@ -50,6 +53,20 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
         </div>
 
         <div className="p-6">
+          {activeTab === 'quickstart' && (
+            <QuickStartGuide
+              entryPoints={structureAnalysis?.entry_points || []}
+              keyFiles={structureAnalysis?.key_files || []}
+              languages={structureAnalysis?.languages || {}}
+              dependencies={structureAnalysis?.dependencies || {}}
+              readme={structureAnalysis?.readme}
+            />
+          )}
+
+          {activeTab === 'complexity' && (
+            <ComplexityAnalysis files={structureAnalysis?.files || {}} />
+          )}
+
           {activeTab === 'overview' && (
             <OverviewSection
               repositoryUrl={data.repository_url}

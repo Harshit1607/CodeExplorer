@@ -1,3 +1,5 @@
+import LanguageChart from './LanguageChart';
+import FileStatsChart from './FileStatsChart';
 
 interface LanguagesSectionProps {
   languages: {
@@ -44,7 +46,7 @@ export default function LanguagesSection({ languages }: LanguagesSectionProps) {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
         Language Breakdown
       </h3>
@@ -64,6 +66,17 @@ export default function LanguagesSection({ languages }: LanguagesSectionProps) {
         </div>
       </div>
 
+      {/* Visualizations */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-6 border border-slate-200 dark:border-slate-600">
+          <LanguageChart languages={languages} />
+        </div>
+        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-6 border border-slate-200 dark:border-slate-600">
+          <FileStatsChart languages={languages} />
+        </div>
+      </div>
+
+      {/* Progress Bars */}
       <div className="space-y-4">
         <h4 className="text-md font-semibold text-slate-800 dark:text-slate-200">
           Distribution

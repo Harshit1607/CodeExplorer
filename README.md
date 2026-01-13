@@ -19,11 +19,13 @@ CodeExplorer solves this by:
 
 ## ✨ Key Features (MVP)
 
-- Analyze a public GitHub repository (single repo at a time)
-- Folder and file-level explanations
-- Dependency graph visualization
-- Repo-grounded semantic search
-- Auto-generated onboarding documentation (Markdown)
+- 📊 **Repository Analysis**: Analyze any public GitHub repository with one click
+- 📁 **File Structure Visualization**: Interactive file tree and treemap views
+- 💻 **Language Breakdown**: Pie charts and bar graphs showing code distribution
+- 🔗 **Dependency Graph**: Interactive force-directed graph of project dependencies
+- ⭐ **Key Files Detection**: Automatic identification of entry points and important files
+- 📈 **Interactive Charts**: D3.js and Recharts visualizations for data insights
+- 🎨 **Modern Dashboard**: Clean, responsive UI with dark mode support
 
 ---
 
@@ -45,9 +47,11 @@ CodeExplorer solves this by:
 - FAISS + sentence-transformers
 
 **Frontend**
-- Next.js
+- Vite + React 18
+- TypeScript
 - Tailwind CSS
-- D3.js
+- D3.js v7 (force-directed graphs, treemaps)
+- Recharts (pie charts, bar charts)
 
 **Storage**
 - SQLite (temporary analysis persistence)

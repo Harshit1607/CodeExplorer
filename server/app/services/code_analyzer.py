@@ -182,13 +182,15 @@ class CodeAnalyzer:
                         'methods': [m.name for m in node.body if isinstance(m, ast.FunctionDef)]
                     })
 
+            # Check for main entry point
+            has_main_block = "if __name__ == '__main__'" in content or 'if __name__ == "__main__"' in content
+            has_main_function = any(f['name'] == 'main' for f in functions)
+
             return {
                 'imports': list(set(imports)),
                 'functions': functions,
                 'classes': classes,
-                'has_main': any(f['name'] == '__main__' or
-                              (f['name'] == 'main' and f.get('line', 0) > 0)
-                              for f in functions) or '__main__' in content
+                'has_main': has_main_block or has_main_function
             }
         except:
             return {'imports': [], 'functions': [], 'classes': []}
@@ -230,42 +232,74 @@ class CodeAnalyzer:
         """Detect likely entry points in the repository."""
         entry_points = []
 
+        # Normalize entry point patterns to lowercase for comparison
+        entry_patterns_lower = [p.lower() for p in self.ENTRY_POINT_PATTERNS]
+
         for file_path, metadata in self.file_metadata.items():
             filename = Path(file_path).name.lower()
 
             # Check common entry point filenames
-            if filename in self.ENTRY_POINT_PATTERNS:
+            if filename in entry_patterns_lower:
                 entry_points.append(file_path)
+                continue
 
             # Check for main function/block
-            elif metadata.get('has_main', False):
+            if metadata.get('has_main', False):
+                entry_points.append(file_path)
+                continue
+
+            # Check for files that look like entry points (e.g., start.*, run.*, etc.)
+            basename = Path(file_path).stem.lower()
+            if basename in ['start', 'run', 'boot', 'init', 'launch', 'cli']:
                 entry_points.append(file_path)
 
         return entry_points
 
     def _identify_key_files(self) -> List[str]:
         """Identify key/important files based on various heuristics."""
-        key_files = []
+        config_files = []
+        important_code_files = []
 
         for file_path, metadata in self.file_metadata.items():
             filename = Path(file_path).name.lower()
 
-            # Config files
+            # Priority 1: Essential config files (always include)
             if filename in ['package.json', 'requirements.txt', 'pyproject.toml',
                           'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle',
-                          'dockerfile', 'docker-compose.yml', '.env.example',
-                          'makefile', 'readme.md', 'license']:
-                key_files.append(file_path)
+                          'dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
+                          'makefile', 'readme.md', 'license', '.gitignore',
+                          'tsconfig.json', 'vite.config.ts', 'vite.config.js',
+                          'next.config.js', 'next.config.ts']:
+                config_files.append((file_path, 100))  # High priority
+                continue
 
-            # Files with many imports (likely central to architecture)
-            elif len(metadata.get('imports', [])) > 5:
-                key_files.append(file_path)
+            # Priority 2: Files with high architectural importance
+            imports_count = len(metadata.get('imports', []))
+            classes_count = len(metadata.get('classes', []))
+            functions_count = len(metadata.get('functions', []))
 
-            # Files with many classes/functions
-            elif (len(metadata.get('classes', [])) + len(metadata.get('functions', []))) > 10:
-                key_files.append(file_path)
+            # Calculate importance score
+            importance = (
+                (imports_count * 2) +  # Many imports = central to architecture
+                (classes_count * 5) +   # Classes are important
+                (functions_count * 1)   # Functions matter less
+            )
 
-        return key_files[:20]  # Limit to top 20 key files
+            # Only include files with significant importance (avoid test files, utils)
+            if importance > 15:
+                # Exclude test files
+                if not any(x in file_path.lower() for x in ['test_', '_test', 'tests/', '/test/', '.test.', '.spec.']):
+                    important_code_files.append((file_path, importance))
+
+        # Sort code files by importance and take top 15
+        important_code_files.sort(key=lambda x: x[1], reverse=True)
+        top_code_files = [f[0] for f in important_code_files[:15]]
+
+        # Extract file paths from config files (remove priority scores)
+        config_file_paths = [f[0] for f in config_files[:10]]
+
+        # Combine config files + top code files
+        return config_file_paths + top_code_files
 
     def _build_file_tree(self) -> Dict[str, Any]:
         """Build a hierarchical tree structure of files and folders."""
