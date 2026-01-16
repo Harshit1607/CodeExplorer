@@ -6,6 +6,7 @@ import FileTreeSection from './FileTreeSection';
 import LanguagesSection from './LanguagesSection';
 import DependenciesSection from './DependenciesSection';
 import KeyFilesSection from './KeyFilesSection';
+import FileDependencies from './FileDependencies';
 
 interface AnalysisResultsProps {
   data: any;
@@ -21,6 +22,7 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
     { id: 'structure', label: 'File Structure', icon: '📁' },
     { id: 'languages', label: 'Languages', icon: '💻' },
     { id: 'dependencies', label: 'Dependencies', icon: '📦' },
+    { id: 'filedeps', label: 'File Dependencies', icon: '🔗' },
     { id: 'keyfiles', label: 'Key Files', icon: '⭐' },
   ];
 
@@ -87,6 +89,13 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
 
           {activeTab === 'dependencies' && (
             <DependenciesSection dependencies={structureAnalysis?.dependencies} />
+          )}
+
+          {activeTab === 'filedeps' && (
+            <FileDependencies
+              files={structureAnalysis?.files || {}}
+              fileDependencies={structureAnalysis?.file_dependencies || {}}
+            />
           )}
 
           {activeTab === 'keyfiles' && (

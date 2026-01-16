@@ -98,6 +98,9 @@ class CodeAnalyzer:
         frameworks = self._detect_frameworks()
         databases = self._detect_databases()
 
+        # Build file dependency graph
+        file_dependencies = self._build_file_dependencies()
+
         return {
             "languages": self._language_stats(),
             "frameworks": frameworks,
@@ -109,6 +112,7 @@ class CodeAnalyzer:
             "total_files": len(self.files),
             "complexity": self._complexity(),
             "files": self.files,
+            "file_dependencies": file_dependencies,
             "readme": self._extract_readme(),
         }
 
@@ -183,12 +187,29 @@ class CodeAnalyzer:
             return {"imports": [], "functions": [], "classes": [], "has_main": False}
 
     def _analyze_js(self, content: str) -> Dict:
-        """Analyze JavaScript/TypeScript file."""
-        imports = re.findall(r"(?:import|require)\s*\(?['\"]([^'\"]+)['\"]", content)
-        imports += re.findall(r"from\s+['\"]([^'\"]+)['\"]", content)
+        """Analyze JavaScript/TypeScript file with comprehensive import detection."""
+        imports = set()
+
+        # Standard ES6 imports: import X from 'module'
+        imports.update(re.findall(r"import\s+.*?\s+from\s+['\"]([^'\"]+)['\"]", content, re.DOTALL))
+
+        # Import only: import 'module' (side effects)
+        imports.update(re.findall(r"import\s+['\"]([^'\"]+)['\"]", content))
+
+        # Require statements: require('module')
+        imports.update(re.findall(r"require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", content))
+
+        # Dynamic imports: import('module')
+        imports.update(re.findall(r"import\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", content))
+
+        # Re-exports: export * from 'module' or export { x } from 'module'
+        imports.update(re.findall(r"export\s+.*?\s+from\s+['\"]([^'\"]+)['\"]", content))
+
+        # Type imports (TypeScript): import type { X } from 'module'
+        imports.update(re.findall(r"import\s+type\s+.*?\s+from\s+['\"]([^'\"]+)['\"]", content))
 
         return {
-            "imports": list(set(imports)),
+            "imports": list(imports),
             "functions": re.findall(r"(?:function|const|let|var)\s+(\w+)\s*(?:=\s*(?:async\s*)?\(|=\s*function|\()", content),
             "classes": re.findall(r"class\s+(\w+)", content),
             "has_main": "createRoot" in content or "ReactDOM.render" in content or "createApp" in content
@@ -638,6 +659,156 @@ class CodeAnalyzer:
             "functions": sum(len(m.get("functions", [])) for m in self.files.values()),
             "classes": sum(len(m.get("classes", [])) for m in self.files.values()),
         }
+
+    def _build_file_dependencies(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Build a dependency graph showing what files each file depends on.
+        Maps import statements to actual files in the repository.
+        """
+        file_deps = {}
+
+        # Create a map of possible module names to file paths
+        file_map = self._build_file_map()
+
+        for file_path, meta in self.files.items():
+            imports = meta.get('imports', [])
+            deps = {
+                'imports': imports,  # Raw import strings
+                'resolved': [],      # Resolved to actual files in repo
+                'external': [],      # External packages (not in repo)
+            }
+
+            for imp in imports:
+                resolved = self._resolve_import(imp, file_path, file_map)
+                if resolved:
+                    if resolved not in deps['resolved']:
+                        deps['resolved'].append(resolved)
+                else:
+                    # It's an external package
+                    if imp not in deps['external']:
+                        deps['external'].append(imp)
+
+            file_deps[file_path] = deps
+
+        return file_deps
+
+    def _build_file_map(self) -> Dict[str, str]:
+        """
+        Build a map from possible import names to actual file paths.
+        E.g., 'components/Button' -> 'src/components/Button.tsx'
+        """
+        file_map = {}
+
+        for file_path in self.files.keys():
+            # Normalize path separators
+            normalized = file_path.replace('\\', '/')
+
+            # Get various forms of the path that could be used in imports
+            path_obj = Path(normalized)
+            stem = path_obj.stem  # filename without extension
+            parent = str(path_obj.parent).replace('\\', '/') if str(path_obj.parent) != '.' else ''
+
+            # Full path without extension
+            no_ext = str(path_obj.with_suffix('')).replace('\\', '/')
+            file_map[no_ext] = file_path
+            file_map['./' + no_ext] = file_path
+            file_map['/' + no_ext] = file_path
+
+            # Full path WITH extension (some imports include extension)
+            file_map[normalized] = file_path
+            file_map['./' + normalized] = file_path
+
+            # Just the filename (for relative imports)
+            file_map[stem] = file_path
+            file_map['./' + stem] = file_path
+
+            # For index files, map the directory name
+            if stem in ['index', '__init__']:
+                if parent:
+                    file_map[parent] = file_path
+                    file_map['./' + parent] = file_path
+                    file_map['/' + parent] = file_path
+
+            # Handle various path formats
+            # src/components/Button -> components/Button, Button
+            parts = normalized.split('/')
+            for i in range(len(parts)):
+                partial = '/'.join(parts[i:])
+                partial_no_ext = str(Path(partial).with_suffix('')).replace('\\', '/')
+                file_map[partial_no_ext] = file_path
+                file_map['./' + partial_no_ext] = file_path
+
+                # Also with extension
+                file_map[partial] = file_path
+                file_map['./' + partial] = file_path
+
+        # Also track common alias paths (src/, @/, etc.)
+        for file_path in self.files.keys():
+            normalized = file_path.replace('\\', '/')
+            # Common aliases like @/components -> src/components
+            if normalized.startswith('src/'):
+                alias_path = '@/' + normalized[4:]
+                alias_no_ext = str(Path(alias_path).with_suffix('')).replace('\\', '/')
+                file_map[alias_path] = file_path
+                file_map[alias_no_ext] = file_path
+
+        return file_map
+
+    def _resolve_import(self, imp: str, current_file: str, file_map: Dict[str, str]) -> Optional[str]:
+        """
+        Try to resolve an import string to an actual file in the repository.
+        Returns the file path if found, None if it's an external package.
+        """
+        # Skip obvious external packages
+        if imp.startswith('@') and '/' in imp:
+            # Scoped npm packages like @types/node, @nestjs/common
+            return None
+        if not imp.startswith('.') and not imp.startswith('/'):
+            # Check if it looks like a node module (no path separators at start)
+            # These are likely external: 'react', 'express', 'lodash'
+            # But could be aliased paths: 'components/Button'
+            pass
+
+        # Clean up the import
+        clean_imp = imp.replace('\\', '/')
+
+        # Remove leading ./ or /
+        if clean_imp.startswith('./'):
+            # Relative import - resolve from current file's directory
+            current_dir = str(Path(current_file).parent).replace('\\', '/')
+            if current_dir == '.':
+                clean_imp = clean_imp[2:]
+            else:
+                clean_imp = current_dir + '/' + clean_imp[2:]
+        elif clean_imp.startswith('../'):
+            # Parent directory import
+            current_dir = Path(current_file).parent
+            while clean_imp.startswith('../'):
+                current_dir = current_dir.parent
+                clean_imp = clean_imp[3:]
+            if str(current_dir) != '.':
+                clean_imp = str(current_dir).replace('\\', '/') + '/' + clean_imp
+        elif clean_imp.startswith('/'):
+            clean_imp = clean_imp[1:]
+
+        # Try to find in file map
+        if clean_imp in file_map:
+            return file_map[clean_imp]
+
+        # Try with common extensions
+        for ext in ['', '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go']:
+            test_path = clean_imp + ext
+            if test_path in file_map:
+                return file_map[test_path]
+
+        # Try index files
+        for idx in ['/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.py', '/__init__.py']:
+            test_path = clean_imp + idx
+            if test_path in file_map:
+                return file_map[test_path]
+
+        # Direct lookup in file map
+        return file_map.get(imp)
 
     def _extract_readme(self) -> Optional[Dict[str, str]]:
         """Extract README content if exists."""
