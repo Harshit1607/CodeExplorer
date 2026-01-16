@@ -3,6 +3,8 @@ interface QuickStartGuideProps {
   keyFiles: string[];
   languages: { [key: string]: { count: number; lines: number } };
   dependencies: any;
+  frameworks?: { frontend: string[]; backend: string[] };
+  databases?: string[];
   readme?: { content: string };
 }
 
@@ -11,68 +13,75 @@ export default function QuickStartGuide({
   keyFiles,
   languages,
   dependencies,
+  frameworks,
+  databases,
   readme,
 }: QuickStartGuideProps) {
   // Determine primary language
   const primaryLanguage = Object.entries(languages || {})
     .sort(([, a], [, b]) => b.lines - a.lines)[0]?.[0] || 'Unknown';
 
-  // Get setup files
-  const setupFiles = keyFiles.filter(f =>
-    f.toLowerCase().includes('package.json') ||
-    f.toLowerCase().includes('requirements.txt') ||
-    f.toLowerCase().includes('cargo.toml') ||
-    f.toLowerCase().includes('go.mod') ||
-    f.toLowerCase().includes('pom.xml')
-  );
+  // Get all frameworks from backend detection
+  const frontendFrameworks = frameworks?.frontend || [];
+  const backendFrameworks = frameworks?.backend || [];
+  const allFrameworks = [...frontendFrameworks, ...backendFrameworks];
+  const primaryFramework = frontendFrameworks[0] || backendFrameworks[0] || null;
 
-  // Detect framework
-  const detectFramework = () => {
-    const deps = dependencies?.javascript?.production || [];
-    const pythonDeps = dependencies?.python?.['requirements.txt'] || [];
-
-    if (deps.includes('react')) return 'React';
-    if (deps.includes('next')) return 'Next.js';
-    if (deps.includes('vue')) return 'Vue.js';
-    if (deps.includes('express')) return 'Express.js';
-    if (pythonDeps.some((d: string) => d.includes('django'))) return 'Django';
-    if (pythonDeps.some((d: string) => d.includes('flask'))) return 'Flask';
-    if (pythonDeps.some((d: string) => d.includes('fastapi'))) return 'FastAPI';
-
-    return null;
-  };
-
-  const framework = detectFramework();
+  // Check for dependency files
+  const hasPkgJson = dependencies?.javascript && Object.keys(dependencies.javascript).length > 0;
+  const hasRequirements = dependencies?.python && Object.keys(dependencies.python).length > 0;
+  const hasGoMod = dependencies?.other?.['go.mod'];
+  const hasCargo = dependencies?.other?.['Cargo.toml'];
 
   // Generate installation command
   const getInstallCommand = () => {
-    if (setupFiles.some(f => f.includes('package.json'))) {
+    if (hasPkgJson) {
       return 'npm install';
     }
-    if (setupFiles.some(f => f.includes('requirements.txt'))) {
+    if (hasRequirements) {
       return 'pip install -r requirements.txt';
     }
-    if (setupFiles.some(f => f.includes('Cargo.toml'))) {
+    if (hasCargo) {
       return 'cargo build';
     }
-    if (setupFiles.some(f => f.includes('go.mod'))) {
+    if (hasGoMod) {
       return 'go mod download';
     }
     return 'Check README for setup instructions';
   };
 
-  // Generate run command
+  // Generate run command based on detected frameworks
   const getRunCommand = () => {
-    if (framework === 'Next.js') return 'npm run dev';
-    if (framework === 'React') return 'npm start';
-    if (framework === 'Express.js') return 'npm start';
-    if (framework === 'Django') return 'python manage.py runserver';
-    if (framework === 'Flask' || framework === 'FastAPI') return 'python app.py';
-    if (primaryLanguage === 'Python' && entryPoints.length > 0) {
+    // Frontend frameworks
+    if (frontendFrameworks.includes('Next.js')) return 'npm run dev';
+    if (frontendFrameworks.includes('React') || frontendFrameworks.includes('Vite')) return 'npm run dev';
+    if (frontendFrameworks.includes('Vue.js')) return 'npm run dev';
+    if (frontendFrameworks.includes('Angular')) return 'ng serve';
+    if (frontendFrameworks.includes('Svelte') || frontendFrameworks.includes('SvelteKit')) return 'npm run dev';
+
+    // Backend frameworks
+    if (backendFrameworks.includes('FastAPI')) return 'uvicorn main:app --reload';
+    if (backendFrameworks.includes('Django')) return 'python manage.py runserver';
+    if (backendFrameworks.includes('Flask')) return 'flask run';
+    if (backendFrameworks.includes('Express.js')) return 'npm start';
+    if (backendFrameworks.includes('NestJS')) return 'npm run start:dev';
+    if (backendFrameworks.includes('Spring Boot')) return 'mvn spring-boot:run';
+    if (backendFrameworks.includes('Gin (Go)') || backendFrameworks.includes('Fiber (Go)')) return 'go run main.go';
+    if (backendFrameworks.includes('Ruby on Rails')) return 'rails server';
+    if (backendFrameworks.includes('Laravel')) return 'php artisan serve';
+
+    // Fallback based on language
+    if (primaryLanguage.includes('Python') && entryPoints.length > 0) {
       return `python ${entryPoints[0]}`;
     }
-    if (primaryLanguage === 'JavaScript' && entryPoints.length > 0) {
+    if ((primaryLanguage.includes('JavaScript') || primaryLanguage.includes('TypeScript')) && entryPoints.length > 0) {
       return `node ${entryPoints[0]}`;
+    }
+    if (primaryLanguage === 'Go' && entryPoints.length > 0) {
+      return `go run ${entryPoints[0]}`;
+    }
+    if (primaryLanguage === 'Rust') {
+      return 'cargo run';
     }
     return 'Check README for run instructions';
   };
@@ -93,17 +102,11 @@ export default function QuickStartGuide({
         <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-3">
           📋 Project Overview
         </h4>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
             <p className="text-sm text-slate-600 dark:text-slate-400">Primary Language</p>
             <p className="text-lg font-semibold text-slate-900 dark:text-white">{primaryLanguage}</p>
           </div>
-          {framework && (
-            <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Framework</p>
-              <p className="text-lg font-semibold text-slate-900 dark:text-white">{framework}</p>
-            </div>
-          )}
           <div>
             <p className="text-sm text-slate-600 dark:text-slate-400">Entry Points</p>
             <p className="text-lg font-semibold text-slate-900 dark:text-white">{entryPoints.length}</p>
@@ -114,7 +117,49 @@ export default function QuickStartGuide({
               {Object.keys(languages || {}).length}
             </p>
           </div>
+          {databases && databases.length > 0 && (
+            <div>
+              <p className="text-sm text-slate-600 dark:text-slate-400">Database</p>
+              <p className="text-lg font-semibold text-slate-900 dark:text-white">{databases[0]}</p>
+            </div>
+          )}
         </div>
+
+        {/* Tech Stack */}
+        {allFrameworks.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-blue-200 dark:border-blue-700">
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">Tech Stack</p>
+            <div className="flex flex-wrap gap-2">
+              {frontendFrameworks.map((fw, idx) => (
+                <span
+                  key={`fe-${idx}`}
+                  className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
+                           bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200"
+                >
+                  {fw}
+                </span>
+              ))}
+              {backendFrameworks.map((fw, idx) => (
+                <span
+                  key={`be-${idx}`}
+                  className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
+                           bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-200"
+                >
+                  {fw}
+                </span>
+              ))}
+              {databases?.map((db, idx) => (
+                <span
+                  key={`db-${idx}`}
+                  className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
+                           bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200"
+                >
+                  {db}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Setup Steps */}
@@ -186,18 +231,18 @@ export default function QuickStartGuide({
             </div>
           )}
 
-          {setupFiles.length > 0 && (
+          {keyFiles.length > 0 && (
             <div>
               <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                Configuration Files:
+                Key Files:
               </p>
               <div className="space-y-2">
-                {setupFiles.slice(0, 3).map((file, idx) => (
+                {keyFiles.slice(0, 5).map((file, idx) => (
                   <div
                     key={idx}
                     className="flex items-center gap-2 text-sm bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded px-3 py-2"
                   >
-                    <span className="text-blue-600 dark:text-blue-400">⚙️</span>
+                    <span className="text-blue-600 dark:text-blue-400">📄</span>
                     <code className="font-mono text-slate-900 dark:text-white">{file}</code>
                   </div>
                 ))}
@@ -223,9 +268,9 @@ export default function QuickStartGuide({
           <li>
             • Review <strong>high complexity files</strong> in the Complexity tab - these may be core logic
           </li>
-          {framework && (
+          {primaryFramework && (
             <li>
-              • This is a <strong>{framework}</strong> project - familiarize yourself with its patterns
+              • This is a <strong>{primaryFramework}</strong> project - familiarize yourself with its patterns
             </li>
           )}
           <li>

@@ -1,4 +1,4 @@
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 interface FileMetadata {
   path: string;
@@ -28,8 +28,29 @@ export default function ComplexityAnalysis({ files }: ComplexityAnalysisProps) {
     );
   }
 
+  // Files to exclude from complexity analysis (auto-generated, lock files, etc.)
+  const excludedFiles = [
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+    'composer.lock',
+    'Gemfile.lock',
+    'Cargo.lock',
+    'poetry.lock',
+    'package.json', // Config file, not code
+    'tsconfig.json',
+    'jsconfig.json',
+    '.eslintrc',
+    '.prettierrc',
+  ];
+
   // Calculate complexity score for each file
   const fileComplexity = Object.entries(files)
+    .filter(([path]) => {
+      const filename = path.split(/[/\\]/).pop()?.toLowerCase() || '';
+      // Exclude auto-generated and config files
+      return !excludedFiles.some(excluded => filename === excluded.toLowerCase());
+    })
     .map(([path, metadata]) => {
       const lines = metadata.lines || 0;
       const functions = metadata.functions?.length || 0;

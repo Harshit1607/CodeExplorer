@@ -73,27 +73,43 @@ export default function KeyFilesSection({ keyFiles, entryPoints }: KeyFilesSecti
                 const normalizedPath = normalizePath(file);
                 const fileName = normalizedPath.split('/').pop() || file;
                 const filePath = normalizedPath.split('/').slice(0, -1).join('/');
+                const baseName = fileName.split('.')[0].toLowerCase();
 
-                // Determine file type
-                const isConfig = ['package.json', 'requirements.txt', 'pyproject.toml',
-                                 'cargo.toml', 'dockerfile', 'makefile', '.gitignore',
-                                 'tsconfig.json', 'vite.config'].some(c => fileName.toLowerCase().includes(c));
+                // Determine if this is an entry point file
+                const entryPointNames = ['app', 'main', 'index', 'page', 'layout', 'server', 'application', 'program', 'startup'];
+                const isEntryPoint = entryPointNames.includes(baseName);
+
+                // Get file extension for icon
+                const ext = fileName.split('.').pop()?.toLowerCase() || '';
+                const getFileIcon = () => {
+                  if (isEntryPoint) return '🚀';
+                  if (['ts', 'tsx'].includes(ext)) return '🔷';
+                  if (['js', 'jsx'].includes(ext)) return '🟨';
+                  if (ext === 'py') return '🐍';
+                  if (ext === 'java') return '☕';
+                  if (ext === 'go') return '🔵';
+                  if (ext === 'rs') return '🦀';
+                  if (ext === 'rb') return '💎';
+                  if (ext === 'php') return '🐘';
+                  if (['cs', 'csx'].includes(ext)) return '💜';
+                  return '📄';
+                };
 
                 return (
                   <div
                     key={index}
                     className={`flex items-start gap-3 p-3 rounded-lg border transition-all hover:shadow-md ${
-                      isConfig
-                        ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'
+                      isEntryPoint
+                        ? 'bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 border-purple-200 dark:border-purple-800'
                         : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600'
                     }`}
                   >
                     <div className={`w-8 h-8 rounded flex items-center justify-center flex-shrink-0 ${
-                      isConfig
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400'
+                      isEntryPoint
+                        ? 'bg-purple-500 text-white'
+                        : 'bg-slate-100 dark:bg-slate-700'
                     }`}>
-                      {isConfig ? '⚙️' : '📄'}
+                      {getFileIcon()}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-900 dark:text-white truncate">
@@ -104,9 +120,9 @@ export default function KeyFilesSection({ keyFiles, entryPoints }: KeyFilesSecti
                           {filePath}
                         </p>
                       )}
-                      {isConfig && (
-                        <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded">
-                          CONFIG
+                      {isEntryPoint && (
+                        <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded">
+                          ENTRY POINT
                         </span>
                       )}
                     </div>
@@ -136,10 +152,12 @@ export default function KeyFilesSection({ keyFiles, entryPoints }: KeyFilesSecti
               Understanding Key Files
             </p>
             <ul className="space-y-1 text-blue-800 dark:text-blue-300">
-              <li><strong>Entry Points:</strong> Files that start the application (main.py, index.js, etc.)</li>
-              <li><strong>Config Files:</strong> Setup and configuration (package.json, requirements.txt)</li>
-              <li><strong>Important Code:</strong> Files with many classes, functions, or imports</li>
+              <li><strong>🚀 Entry Points:</strong> Application starting files (App.tsx, main.py, index.js, page.tsx)</li>
+              <li><strong>📄 Important Code:</strong> Files with many classes, functions, or imports - core architecture files</li>
             </ul>
+            <p className="mt-2 text-xs text-blue-600 dark:text-blue-400">
+              Config files (package.json, etc.) and lock files are excluded - only source code shown.
+            </p>
           </div>
         </div>
       </div>

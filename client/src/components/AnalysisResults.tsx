@@ -59,6 +59,8 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
               keyFiles={structureAnalysis?.key_files || []}
               languages={structureAnalysis?.languages || {}}
               dependencies={structureAnalysis?.dependencies || {}}
+              frameworks={structureAnalysis?.frameworks}
+              databases={structureAnalysis?.databases}
               readme={structureAnalysis?.readme}
             />
           )}

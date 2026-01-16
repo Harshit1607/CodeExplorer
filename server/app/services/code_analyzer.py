@@ -2,461 +2,657 @@ import os
 import ast
 import re
 import json
-import toml
 from pathlib import Path
-from typing import Dict, List, Set, Optional, Any
+from typing import Dict, List, Optional, Any, Set
+
 
 class CodeAnalyzer:
-    """Analyzes code files to extract structure, imports, functions, and classes."""
+    """
+    Comprehensive code analyzer that detects:
+    - Languages (with proper names)
+    - Frameworks (frontend/backend)
+    - Databases
+    - Dependencies
+    - Entry points
+    - File structure
+    """
 
-    # Directories to skip during analysis
     SKIP_DIRS = {
-        '.git', 'node_modules', 'dist', 'build', '__pycache__',
-        '.venv', 'venv', 'env', '.next', 'out', 'coverage',
-        '.pytest_cache', '.mypy_cache', 'vendor', 'target'
+        ".git", "node_modules", "dist", "build", "__pycache__",
+        ".venv", "venv", "env", ".next", "out", "coverage",
+        ".pytest_cache", ".mypy_cache", "vendor", "target",
+        ".idea", ".vscode", "bower_components"
     }
 
-    # Common entry point patterns
-    ENTRY_POINT_PATTERNS = [
-        'main.py', 'app.py', '__main__.py', 'run.py', 'server.py',
-        'index.js', 'index.ts', 'main.js', 'main.ts', 'app.js', 'app.ts',
-        'index.jsx', 'index.tsx', 'server.js', 'server.ts'
-    ]
+    # Extension to language name mapping
+    LANGUAGE_NAMES = {
+        ".py": "Python",
+        ".js": "JavaScript",
+        ".jsx": "JavaScript (React)",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript (React)",
+        ".java": "Java",
+        ".go": "Go",
+        ".rs": "Rust",
+        ".rb": "Ruby",
+        ".php": "PHP",
+        ".cs": "C#",
+        ".swift": "Swift",
+        ".kt": "Kotlin",
+        ".scala": "Scala",
+        ".c": "C",
+        ".cpp": "C++",
+        ".h": "C/C++ Header",
+        ".hpp": "C++ Header",
+        ".vue": "Vue",
+        ".svelte": "Svelte",
+    }
+
+    SOURCE_EXTENSIONS = set(LANGUAGE_NAMES.keys())
+
+    # Files to completely ignore
+    IGNORE_FILES = {
+        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+        'composer.lock', 'gemfile.lock', 'cargo.lock', 'poetry.lock',
+        '.ds_store', 'thumbs.db',
+    }
+
+    # Entry point patterns
+    ENTRY_BASENAMES = {
+        'main', 'app', 'index', 'application', 'server', 'client',
+        'program', 'startup', 'bootstrap', 'init', 'run', 'start',
+        'launcher', 'entry', 'root', 'core', 'mod', 'lib',
+        '_app', '_document', 'page', 'layout',
+        'app.module', 'app.component', 'app-routing.module',
+        'manage', 'wsgi', 'asgi', 'settings', 'urls', 'views', 'models',
+        'api', 'routes', 'router',
+    }
 
     def __init__(self, repo_path: str):
         self.repo_path = Path(repo_path)
-        self.file_metadata = {}
-        self.language_stats = {}
+        self.files: Dict[str, Dict] = {}
+        self.all_imports: List[str] = []
+        self.all_npm_deps: Set[str] = set()
+        self.all_python_deps: Set[str] = set()
 
-    def analyze(self) -> Dict:
-        """Main analysis method that orchestrates the entire code analysis."""
-        files = self._get_all_files()
+    def analyze(self) -> Dict[str, Any]:
+        """Main analysis entry point."""
+        # Collect and analyze source files
+        for file_path in self._get_source_files():
+            meta = self._analyze_file(file_path)
+            if meta:
+                rel = str(file_path.relative_to(self.repo_path))
+                self.files[rel] = meta
+                self.all_imports.extend(meta.get('imports', []))
 
-        for file_path in files:
-            metadata = self._analyze_file(file_path)
-            if metadata:
-                relative_path = str(file_path.relative_to(self.repo_path))
-                self.file_metadata[relative_path] = metadata
+        # Extract all dependencies first (needed for framework detection)
+        dependencies = self._extract_dependencies()
 
-                # Update language stats
-                lang = metadata['language']
-                if lang not in self.language_stats:
-                    self.language_stats[lang] = {'count': 0, 'lines': 0}
-                self.language_stats[lang]['count'] += 1
-                self.language_stats[lang]['lines'] += metadata.get('lines', 0)
+        # Collect all npm and python deps for framework/db detection
+        for deps in dependencies.get('javascript', {}).values():
+            self.all_npm_deps.update(deps)
+        for deps in dependencies.get('python', {}).values():
+            self.all_python_deps.update(d.lower() for d in deps)
 
-        entry_points = self._detect_entry_points()
-        key_files = self._identify_key_files()
-
-        # NEW: Build file tree structure
-        file_tree = self._build_file_tree()
-
-        # NEW: Extract README content
-        readme_content = self._extract_readme()
-
-        # NEW: Parse dependencies
-        dependencies = self._parse_dependencies()
-
-        # NEW: Detect license
-        license_info = self._detect_license()
+        # Detect frameworks and databases using collected deps
+        frameworks = self._detect_frameworks()
+        databases = self._detect_databases()
 
         return {
-            'total_files': len(self.file_metadata),
-            'languages': self.language_stats,
-            'entry_points': entry_points,
-            'key_files': key_files,
-            'tree': file_tree,
-            'readme': readme_content,
-            'dependencies': dependencies,
-            'license': license_info,
-            'files': self.file_metadata
+            "languages": self._language_stats(),
+            "frameworks": frameworks,
+            "databases": databases,
+            "dependencies": dependencies,
+            "entry_points": self._entry_points(),
+            "key_files": self._key_files(),
+            "tree": self._build_file_tree(),
+            "total_files": len(self.files),
+            "complexity": self._complexity(),
+            "files": self.files,
+            "readme": self._extract_readme(),
         }
 
-    def _get_all_files(self) -> List[Path]:
-        """Recursively get all code files, skipping ignored directories."""
-        files = []
-        for root, dirs, filenames in os.walk(self.repo_path):
-            # Remove skip directories from search
+    def _get_source_files(self) -> List[Path]:
+        """Get all source files, excluding ignored directories and files."""
+        result = []
+        for root, dirs, files in os.walk(self.repo_path):
             dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
 
-            for filename in filenames:
-                file_path = Path(root) / filename
-                if self._is_code_file(filename):
-                    files.append(file_path)
+            for name in files:
+                if name.lower() in self.IGNORE_FILES:
+                    continue
+                ext = Path(name).suffix.lower()
+                if ext in self.SOURCE_EXTENSIONS:
+                    result.append(Path(root) / name)
 
-        return files
+        return result
 
-    def _is_code_file(self, filename: str) -> bool:
-        """Check if file is a code file we want to analyze."""
-        code_extensions = {
-            '.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.cpp', '.c',
-            '.h', '.hpp', '.go', '.rs', '.rb', '.php', '.cs', '.swift',
-            '.kt', '.scala', '.sh', '.bash', '.yaml', '.yml', '.json',
-            '.toml', '.md', '.sql', '.html', '.css', '.scss', '.vue'
-        }
-        return Path(filename).suffix.lower() in code_extensions
-
-    def _analyze_file(self, file_path: Path) -> Optional[Dict]:
-        """Analyze a single file and return its metadata."""
+    def _analyze_file(self, path: Path) -> Optional[Dict]:
+        """Analyze a single source file."""
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            ext = path.suffix.lower()
 
-            ext = file_path.suffix.lower()
-            language = self._get_language(ext)
-
-            metadata = {
-                'path': str(file_path.relative_to(self.repo_path)),
-                'language': language,
-                'extension': ext,
-                'size': file_path.stat().st_size,
-                'lines': len(content.splitlines())
+            meta = {
+                "extension": ext,
+                "language": self.LANGUAGE_NAMES.get(ext, "Unknown"),
+                "lines": len(content.splitlines()),
+                "size": path.stat().st_size,
+                "imports": [],
+                "functions": [],
+                "classes": [],
+                "has_main": False
             }
 
-            # Language-specific analysis
-            if ext == '.py':
-                metadata.update(self._analyze_python(content))
-            elif ext in ['.js', '.jsx', '.ts', '.tsx']:
-                metadata.update(self._analyze_javascript(content))
+            if ext == ".py":
+                meta.update(self._analyze_python(content))
+            elif ext in {".js", ".jsx", ".ts", ".tsx"}:
+                meta.update(self._analyze_js(content))
+            elif ext == ".java":
+                meta.update(self._analyze_java(content))
+            elif ext == ".go":
+                meta.update(self._analyze_go(content))
 
-            return metadata
-
-        except Exception as e:
-            # Skip files that can't be read
+            return meta
+        except Exception:
             return None
 
-    def _get_language(self, ext: str) -> str:
-        """Map file extension to language name."""
-        lang_map = {
-            '.py': 'Python',
-            '.js': 'JavaScript',
-            '.jsx': 'JavaScript',
-            '.ts': 'TypeScript',
-            '.tsx': 'TypeScript',
-            '.java': 'Java',
-            '.cpp': 'C++',
-            '.c': 'C',
-            '.go': 'Go',
-            '.rs': 'Rust',
-            '.rb': 'Ruby',
-            '.php': 'PHP',
-            '.cs': 'C#',
-            '.swift': 'Swift',
-            '.kt': 'Kotlin',
-            '.md': 'Markdown',
-            '.json': 'JSON',
-            '.yaml': 'YAML',
-            '.yml': 'YAML',
-            '.html': 'HTML',
-            '.css': 'CSS',
-            '.scss': 'SCSS'
-        }
-        return lang_map.get(ext, 'Other')
-
     def _analyze_python(self, content: str) -> Dict:
-        """Analyze Python file using AST."""
+        """Analyze Python file."""
         try:
             tree = ast.parse(content)
-
-            imports = []
-            functions = []
-            classes = []
+            imports, funcs, classes = [], [], []
 
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        imports.append(alias.name)
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        imports.append(node.module)
+                    imports.extend(a.name for a in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.append(node.module)
                 elif isinstance(node, ast.FunctionDef):
-                    functions.append({
-                        'name': node.name,
-                        'line': node.lineno,
-                        'is_async': isinstance(node, ast.AsyncFunctionDef)
-                    })
+                    funcs.append(node.name)
                 elif isinstance(node, ast.ClassDef):
-                    classes.append({
-                        'name': node.name,
-                        'line': node.lineno,
-                        'methods': [m.name for m in node.body if isinstance(m, ast.FunctionDef)]
-                    })
-
-            # Check for main entry point
-            has_main_block = "if __name__ == '__main__'" in content or 'if __name__ == "__main__"' in content
-            has_main_function = any(f['name'] == 'main' for f in functions)
+                    classes.append(node.name)
 
             return {
-                'imports': list(set(imports)),
-                'functions': functions,
-                'classes': classes,
-                'has_main': has_main_block or has_main_function
+                "imports": imports,
+                "functions": funcs,
+                "classes": classes,
+                "has_main": "__main__" in content or "def main" in content
             }
         except:
-            return {'imports': [], 'functions': [], 'classes': []}
+            return {"imports": [], "functions": [], "classes": [], "has_main": False}
 
-    def _analyze_javascript(self, content: str) -> Dict:
-        """Analyze JavaScript/TypeScript file using regex patterns."""
-        # Basic import detection
-        import_pattern = r'(?:import|require)\s*(?:\{[^}]+\}|\w+)\s*from\s*[\'"]([^\'"]+)[\'"]'
-        imports = re.findall(import_pattern, content)
-
-        # Function detection
-        func_pattern = r'(?:function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(|(\w+)\s*:\s*(?:async\s*)?\()'
-        functions = []
-        for match in re.finditer(func_pattern, content):
-            func_name = match.group(1) or match.group(2) or match.group(3)
-            if func_name:
-                functions.append({
-                    'name': func_name,
-                    'line': content[:match.start()].count('\n') + 1
-                })
-
-        # Class detection
-        class_pattern = r'class\s+(\w+)'
-        classes = []
-        for match in re.finditer(class_pattern, content):
-            classes.append({
-                'name': match.group(1),
-                'line': content[:match.start()].count('\n') + 1
-            })
+    def _analyze_js(self, content: str) -> Dict:
+        """Analyze JavaScript/TypeScript file."""
+        imports = re.findall(r"(?:import|require)\s*\(?['\"]([^'\"]+)['\"]", content)
+        imports += re.findall(r"from\s+['\"]([^'\"]+)['\"]", content)
 
         return {
-            'imports': list(set(imports)),
-            'functions': functions,
-            'classes': classes,
-            'has_main': 'main(' in content or 'Main' in [c['name'] for c in classes]
+            "imports": list(set(imports)),
+            "functions": re.findall(r"(?:function|const|let|var)\s+(\w+)\s*(?:=\s*(?:async\s*)?\(|=\s*function|\()", content),
+            "classes": re.findall(r"class\s+(\w+)", content),
+            "has_main": "createRoot" in content or "ReactDOM.render" in content or "createApp" in content
         }
 
-    def _detect_entry_points(self) -> List[str]:
-        """Detect likely entry points in the repository."""
+    def _analyze_java(self, content: str) -> Dict:
+        """Analyze Java file."""
+        return {
+            "imports": re.findall(r"import\s+([\w.]+);", content),
+            "functions": re.findall(r"(?:public|private|protected)?\s*(?:static)?\s*\w+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?{", content),
+            "classes": re.findall(r"class\s+(\w+)", content),
+            "has_main": "public static void main" in content
+        }
+
+    def _analyze_go(self, content: str) -> Dict:
+        """Analyze Go file."""
+        return {
+            "imports": re.findall(r'import\s+(?:\(\s*)?["\']([^"\']+)["\']', content),
+            "functions": re.findall(r"func\s+(?:\([^)]+\)\s+)?(\w+)", content),
+            "classes": [],  # Go doesn't have classes
+            "has_main": "func main()" in content
+        }
+
+    def _language_stats(self) -> Dict[str, Dict]:
+        """Calculate language statistics with proper names."""
+        stats = {}
+        for meta in self.files.values():
+            lang = meta.get("language", "Unknown")
+            if lang not in stats:
+                stats[lang] = {"count": 0, "lines": 0}
+            stats[lang]["count"] += 1
+            stats[lang]["lines"] += meta.get("lines", 0)
+        return stats
+
+    def _extract_dependencies(self) -> Dict[str, Dict[str, List[str]]]:
+        """Extract dependencies from ALL config files in the repo."""
+        dependencies = {
+            "python": {},
+            "javascript": {},
+            "other": {}
+        }
+
+        # Find all package.json files (for monorepos)
+        for root, dirs, files in os.walk(self.repo_path):
+            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
+            rel_root = Path(root).relative_to(self.repo_path)
+
+            for filename in files:
+                file_path = Path(root) / filename
+
+                # JavaScript - package.json
+                if filename == 'package.json':
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            pkg = json.load(f)
+                            prefix = str(rel_root) if str(rel_root) != '.' else ''
+
+                            if pkg.get('dependencies'):
+                                key = f"{prefix}/dependencies" if prefix else "dependencies"
+                                dependencies["javascript"][key] = list(pkg['dependencies'].keys())
+                            if pkg.get('devDependencies'):
+                                key = f"{prefix}/devDependencies" if prefix else "devDependencies"
+                                dependencies["javascript"][key] = list(pkg['devDependencies'].keys())
+                    except:
+                        pass
+
+                # Python - requirements.txt
+                if filename.lower() in ['requirements.txt', 'requirements-dev.txt', 'requirements.dev.txt']:
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            deps = []
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#') and not line.startswith('-'):
+                                    pkg = re.split(r'[=<>!~\[]', line)[0].strip()
+                                    if pkg:
+                                        deps.append(pkg)
+                            if deps:
+                                prefix = str(rel_root) if str(rel_root) != '.' else ''
+                                key = f"{prefix}/{filename}" if prefix else filename
+                                dependencies["python"][key] = deps
+                    except:
+                        pass
+
+                # Python - pyproject.toml
+                if filename == 'pyproject.toml':
+                    try:
+                        content = file_path.read_text()
+                        # Look for dependencies in [project.dependencies] or [tool.poetry.dependencies]
+                        deps = []
+                        in_deps_section = False
+                        for line in content.split('\n'):
+                            if '[project.dependencies]' in line or '[tool.poetry.dependencies]' in line:
+                                in_deps_section = True
+                                continue
+                            if in_deps_section:
+                                if line.startswith('['):
+                                    break
+                                match = re.match(r'^([a-zA-Z0-9_-]+)\s*=', line.strip())
+                                if match:
+                                    deps.append(match.group(1))
+                        if deps:
+                            prefix = str(rel_root) if str(rel_root) != '.' else ''
+                            key = f"{prefix}/pyproject.toml" if prefix else "pyproject.toml"
+                            dependencies["python"][key] = deps
+                    except:
+                        pass
+
+        # Go - go.mod (root only)
+        go_mod_path = self.repo_path / "go.mod"
+        if go_mod_path.exists():
+            try:
+                content = go_mod_path.read_text()
+                deps = re.findall(r'^\s*([\w./-]+)\s+v', content, re.MULTILINE)
+                if deps:
+                    dependencies["other"]["go.mod"] = deps
+            except:
+                pass
+
+        # Rust - Cargo.toml (root only)
+        cargo_path = self.repo_path / "Cargo.toml"
+        if cargo_path.exists():
+            try:
+                content = cargo_path.read_text()
+                deps = re.findall(r'^\s*([a-zA-Z0-9_-]+)\s*=', content, re.MULTILINE)
+                if deps:
+                    dependencies["other"]["Cargo.toml"] = [d for d in deps if d not in ['name', 'version', 'edition', 'authors']]
+            except:
+                pass
+
+        return dependencies
+
+    def _detect_frameworks(self) -> Dict[str, List[str]]:
+        """Detect frontend and backend frameworks."""
+        frontend = []
+        backend = []
+
+        npm_deps = self.all_npm_deps
+        python_deps = self.all_python_deps
+
+        # Check for config files in entire repo
+        config_files = set()
+        for _, dirs, files in os.walk(self.repo_path):
+            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
+            for f in files:
+                config_files.add(f.lower())
+
+        # ===== Frontend frameworks =====
+
+        # Next.js
+        if 'next.config.js' in config_files or 'next.config.ts' in config_files or 'next.config.mjs' in config_files or 'next' in npm_deps:
+            frontend.append('Next.js')
+        # React (but not if Next.js already detected)
+        elif 'react' in npm_deps or 'react-dom' in npm_deps:
+            frontend.append('React')
+
+        # Vue.js
+        if 'vue' in npm_deps:
+            frontend.append('Vue.js')
+        # Nuxt.js
+        if 'nuxt' in npm_deps or 'nuxt.config.js' in config_files or 'nuxt.config.ts' in config_files:
+            frontend.append('Nuxt.js')
+
+        # Angular
+        if '@angular/core' in npm_deps:
+            frontend.append('Angular')
+
+        # Svelte
+        if 'svelte' in npm_deps:
+            frontend.append('Svelte')
+        if '@sveltejs/kit' in npm_deps:
+            frontend.append('SvelteKit')
+
+        # Build tools
+        if 'vite' in npm_deps:
+            frontend.append('Vite')
+
+        # CSS frameworks
+        if 'tailwindcss' in npm_deps:
+            frontend.append('Tailwind CSS')
+
+        # ===== Backend frameworks =====
+
+        # Python backends
+        if 'fastapi' in python_deps:
+            backend.append('FastAPI')
+        if 'flask' in python_deps:
+            backend.append('Flask')
+        if 'django' in python_deps or 'manage.py' in config_files:
+            backend.append('Django')
+
+        # Node.js backends
+        if 'express' in npm_deps:
+            backend.append('Express.js')
+        if '@nestjs/core' in npm_deps or 'nestjs' in npm_deps:
+            backend.append('NestJS')
+        if 'koa' in npm_deps:
+            backend.append('Koa')
+        if '@hapi/hapi' in npm_deps or 'hapi' in npm_deps:
+            backend.append('Hapi')
+
+        # Java - Spring Boot (check for specific Spring files/imports)
+        if any('springframework' in imp for imp in self.all_imports):
+            backend.append('Spring Boot')
+        elif 'pom.xml' in config_files or 'build.gradle' in config_files:
+            # Check if pom.xml or build.gradle contains spring
+            for cfg in ['pom.xml', 'build.gradle']:
+                cfg_path = self.repo_path / cfg
+                if cfg_path.exists():
+                    try:
+                        content = cfg_path.read_text().lower()
+                        if 'spring-boot' in content or 'springframework' in content:
+                            backend.append('Spring Boot')
+                            break
+                    except:
+                        pass
+
+        # Go frameworks - only detect if we actually have Go files
+        has_go_files = any(meta.get('language') == 'Go' for meta in self.files.values())
+        if has_go_files:
+            go_imports = [imp for imp in self.all_imports if 'github.com' in imp or imp.startswith('go/')]
+            go_imports_str = ' '.join(go_imports)
+            if 'gin-gonic/gin' in go_imports_str:
+                backend.append('Gin (Go)')
+            if 'gofiber/fiber' in go_imports_str:
+                backend.append('Fiber (Go)')
+            if 'labstack/echo' in go_imports_str:
+                backend.append('Echo (Go)')
+
+        # Ruby on Rails
+        if 'gemfile' in config_files:
+            gemfile_path = self.repo_path / "Gemfile"
+            if gemfile_path.exists():
+                try:
+                    content = gemfile_path.read_text().lower()
+                    if 'rails' in content:
+                        backend.append('Ruby on Rails')
+                except:
+                    pass
+
+        # PHP - Laravel
+        if 'artisan' in config_files or 'composer.json' in config_files:
+            composer_path = self.repo_path / "composer.json"
+            if composer_path.exists():
+                try:
+                    content = composer_path.read_text().lower()
+                    if 'laravel' in content:
+                        backend.append('Laravel')
+                except:
+                    pass
+
+        return {
+            "frontend": list(set(frontend)),
+            "backend": list(set(backend))
+        }
+
+    def _detect_databases(self) -> List[str]:
+        """Detect database usage from dependencies and config files."""
+        databases = set()
+
+        npm_deps = self.all_npm_deps
+        python_deps = self.all_python_deps
+
+        # Check npm dependencies for database packages
+        npm_db_mapping = {
+            'mongoose': 'MongoDB',
+            'mongodb': 'MongoDB',
+            'pg': 'PostgreSQL',
+            'postgres': 'PostgreSQL',
+            'mysql': 'MySQL',
+            'mysql2': 'MySQL',
+            'redis': 'Redis',
+            'ioredis': 'Redis',
+            'sqlite3': 'SQLite',
+            'better-sqlite3': 'SQLite',
+            'sequelize': None,  # ORM, check connection
+            'typeorm': None,  # ORM, check connection
+            'prisma': None,  # ORM, check schema
+            '@prisma/client': None,
+            'knex': None,  # Query builder
+            '@elastic/elasticsearch': 'Elasticsearch',
+            'firebase': 'Firebase',
+            'firebase-admin': 'Firebase',
+            '@supabase/supabase-js': 'Supabase',
+        }
+
+        for dep, db in npm_db_mapping.items():
+            if dep in npm_deps and db:
+                databases.add(db)
+
+        # Check Python dependencies for database packages
+        python_db_mapping = {
+            'pymongo': 'MongoDB',
+            'motor': 'MongoDB',  # async MongoDB
+            'psycopg2': 'PostgreSQL',
+            'psycopg2-binary': 'PostgreSQL',
+            'asyncpg': 'PostgreSQL',
+            'pymysql': 'MySQL',
+            'mysqlclient': 'MySQL',
+            'mysql-connector-python': 'MySQL',
+            'redis': 'Redis',
+            'aioredis': 'Redis',
+            'sqlite3': 'SQLite',
+            'aiosqlite': 'SQLite',
+            'sqlalchemy': None,  # ORM
+            'django': None,  # Check settings
+            'elasticsearch': 'Elasticsearch',
+            'firebase-admin': 'Firebase',
+        }
+
+        for dep, db in python_db_mapping.items():
+            if dep in python_deps and db:
+                databases.add(db)
+
+        # Check Prisma schema for database type
+        prisma_schema = self.repo_path / "prisma" / "schema.prisma"
+        if prisma_schema.exists():
+            try:
+                content = prisma_schema.read_text().lower()
+                if 'postgresql' in content or 'postgres' in content:
+                    databases.add('PostgreSQL')
+                elif 'mysql' in content:
+                    databases.add('MySQL')
+                elif 'mongodb' in content:
+                    databases.add('MongoDB')
+                elif 'sqlite' in content:
+                    databases.add('SQLite')
+            except:
+                pass
+
+        # Check docker-compose for database services
+        for compose_file in ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']:
+            compose_path = self.repo_path / compose_file
+            if compose_path.exists():
+                try:
+                    content = compose_path.read_text().lower()
+                    if 'postgres' in content:
+                        databases.add('PostgreSQL')
+                    if 'mysql' in content or 'mariadb' in content:
+                        databases.add('MySQL')
+                    if 'mongo' in content:
+                        databases.add('MongoDB')
+                    if 'redis' in content:
+                        databases.add('Redis')
+                except:
+                    pass
+
+        # Check .env files for database URLs
+        for env_file in ['.env', '.env.example', '.env.local', '.env.development']:
+            env_path = self.repo_path / env_file
+            if env_path.exists():
+                try:
+                    content = env_path.read_text().lower()
+                    if 'mongodb' in content or 'mongo_uri' in content:
+                        databases.add('MongoDB')
+                    if 'postgres' in content or 'postgresql' in content:
+                        databases.add('PostgreSQL')
+                    if 'mysql' in content:
+                        databases.add('MySQL')
+                    if 'redis' in content:
+                        databases.add('Redis')
+                except:
+                    pass
+
+        return list(databases)
+
+    def _entry_points(self) -> List[str]:
+        """Detect application entry points."""
+        result = []
+        for path, meta in self.files.items():
+            basename = Path(path).stem.lower()
+
+            if basename in self.ENTRY_BASENAMES:
+                result.append(path)
+                continue
+
+            if meta.get("has_main"):
+                result.append(path)
+
+        return sorted(set(result))
+
+    def _key_files(self) -> List[str]:
+        """Identify key/important files."""
         entry_points = []
+        important_files = []
 
-        # Normalize entry point patterns to lowercase for comparison
-        entry_patterns_lower = [p.lower() for p in self.ENTRY_POINT_PATTERNS]
+        for path, meta in self.files.items():
+            basename = Path(path).stem.lower()
+            path_lower = path.lower()
 
-        for file_path, metadata in self.file_metadata.items():
-            filename = Path(file_path).name.lower()
-
-            # Check common entry point filenames
-            if filename in entry_patterns_lower:
-                entry_points.append(file_path)
+            # Skip test files
+            if any(x in path_lower for x in ['test_', '_test', 'tests/', '/test/', '.test.', '.spec.']):
                 continue
 
-            # Check for main function/block
-            if metadata.get('has_main', False):
-                entry_points.append(file_path)
+            # Priority 1: Entry point files
+            if basename in self.ENTRY_BASENAMES or meta.get("has_main"):
+                entry_points.append((path, 1000))
                 continue
 
-            # Check for files that look like entry points (e.g., start.*, run.*, etc.)
-            basename = Path(file_path).stem.lower()
-            if basename in ['start', 'run', 'boot', 'init', 'launch', 'cli']:
-                entry_points.append(file_path)
-
-        return entry_points
-
-    def _identify_key_files(self) -> List[str]:
-        """Identify key/important files based on various heuristics."""
-        config_files = []
-        important_code_files = []
-
-        for file_path, metadata in self.file_metadata.items():
-            filename = Path(file_path).name.lower()
-
-            # Priority 1: Essential config files (always include)
-            if filename in ['package.json', 'requirements.txt', 'pyproject.toml',
-                          'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle',
-                          'dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
-                          'makefile', 'readme.md', 'license', '.gitignore',
-                          'tsconfig.json', 'vite.config.ts', 'vite.config.js',
-                          'next.config.js', 'next.config.ts']:
-                config_files.append((file_path, 100))  # High priority
-                continue
-
-            # Priority 2: Files with high architectural importance
-            imports_count = len(metadata.get('imports', []))
-            classes_count = len(metadata.get('classes', []))
-            functions_count = len(metadata.get('functions', []))
-
-            # Calculate importance score
-            importance = (
-                (imports_count * 2) +  # Many imports = central to architecture
-                (classes_count * 5) +   # Classes are important
-                (functions_count * 1)   # Functions matter less
+            # Priority 2: Calculate importance score
+            score = (
+                len(meta.get("imports", [])) * 2 +
+                len(meta.get("classes", [])) * 5 +
+                len(meta.get("functions", [])) * 1
             )
 
-            # Only include files with significant importance (avoid test files, utils)
-            if importance > 15:
-                # Exclude test files
-                if not any(x in file_path.lower() for x in ['test_', '_test', 'tests/', '/test/', '.test.', '.spec.']):
-                    important_code_files.append((file_path, importance))
+            if score >= 8:
+                important_files.append((path, score))
 
-        # Sort code files by importance and take top 15
-        important_code_files.sort(key=lambda x: x[1], reverse=True)
-        top_code_files = [f[0] for f in important_code_files[:15]]
+        important_files.sort(key=lambda x: x[1], reverse=True)
 
-        # Extract file paths from config files (remove priority scores)
-        config_file_paths = [f[0] for f in config_files[:10]]
+        result = [f[0] for f in entry_points]
+        result.extend([f[0] for f in important_files[:20]])
 
-        # Combine config files + top code files
-        return config_file_paths + top_code_files
+        return result
 
     def _build_file_tree(self) -> Dict[str, Any]:
-        """Build a hierarchical tree structure of files and folders."""
+        """Build hierarchical file tree structure."""
         tree = {}
 
-        for file_path in self.file_metadata.keys():
+        for file_path, meta in self.files.items():
             parts = Path(file_path).parts
             current = tree
 
             for i, part in enumerate(parts):
-                if i == len(parts) - 1:  # It's a file
+                if i == len(parts) - 1:  # File
                     current[part] = {
                         'type': 'file',
-                        'size': self.file_metadata[file_path].get('size', 0),
-                        'language': self.file_metadata[file_path].get('language', 'Unknown'),
-                        'lines': self.file_metadata[file_path].get('lines', 0)
+                        'size': meta.get('size', 0),
+                        'language': meta.get('language', 'Unknown'),
+                        'lines': meta.get('lines', 0)
                     }
-                else:  # It's a directory
+                else:  # Directory
                     if part not in current:
                         current[part] = {'type': 'folder', 'children': {}}
-                    elif current[part].get('type') != 'folder':
-                        # Convert to folder if it wasn't already
+                    elif 'children' not in current[part]:
                         current[part] = {'type': 'folder', 'children': {}}
                     current = current[part]['children']
 
         return tree
 
+    def _complexity(self) -> Dict[str, int]:
+        """Calculate overall complexity metrics."""
+        return {
+            "files": len(self.files),
+            "lines": sum(m.get("lines", 0) for m in self.files.values()),
+            "functions": sum(len(m.get("functions", [])) for m in self.files.values()),
+            "classes": sum(len(m.get("classes", [])) for m in self.files.values()),
+        }
+
     def _extract_readme(self) -> Optional[Dict[str, str]]:
-        """Extract README content if it exists."""
+        """Extract README content if exists."""
         readme_patterns = ['README.md', 'readme.md', 'README', 'readme.txt', 'README.rst']
 
         for pattern in readme_patterns:
             readme_path = self.repo_path / pattern
             if readme_path.exists():
                 try:
-                    with open(readme_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        return {
-                            'file': pattern,
-                            'content': content[:5000],  # Limit to first 5000 chars
-                            'full_length': len(content)
-                        }
-                except:
-                    continue
-
-        return None
-
-    def _parse_dependencies(self) -> Dict[str, Any]:
-        """Parse dependency files to extract project dependencies."""
-        dependencies = {
-            'python': {},
-            'javascript': {},
-            'other': {}
-        }
-
-        # Parse requirements.txt
-        req_file = self.repo_path / 'requirements.txt'
-        if req_file.exists():
-            try:
-                with open(req_file, 'r', encoding='utf-8') as f:
-                    deps = []
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            # Extract package name (before ==, >=, etc.)
-                            pkg = re.split(r'[=<>!]', line)[0].strip()
-                            deps.append(line)
-                    dependencies['python']['requirements.txt'] = deps
-            except:
-                pass
-
-        # Parse pyproject.toml
-        pyproject_file = self.repo_path / 'pyproject.toml'
-        if pyproject_file.exists():
-            try:
-                with open(pyproject_file, 'r', encoding='utf-8') as f:
-                    data = toml.load(f)
-
-                    # Poetry dependencies
-                    if 'tool' in data and 'poetry' in data['tool']:
-                        poetry_deps = data['tool']['poetry'].get('dependencies', {})
-                        dependencies['python']['poetry'] = list(poetry_deps.keys())
-
-                    # PEP 621 dependencies
-                    if 'project' in data:
-                        project_deps = data['project'].get('dependencies', [])
-                        dependencies['python']['pyproject'] = project_deps
-            except:
-                pass
-
-        # Parse package.json
-        package_file = self.repo_path / 'package.json'
-        if package_file.exists():
-            try:
-                with open(package_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    dependencies['javascript']['production'] = list(data.get('dependencies', {}).keys())
-                    dependencies['javascript']['dev'] = list(data.get('devDependencies', {}).keys())
-            except:
-                pass
-
-        # Parse Cargo.toml (Rust)
-        cargo_file = self.repo_path / 'Cargo.toml'
-        if cargo_file.exists():
-            try:
-                with open(cargo_file, 'r', encoding='utf-8') as f:
-                    data = toml.load(f)
-                    dependencies['other']['rust'] = list(data.get('dependencies', {}).keys())
-            except:
-                pass
-
-        # Parse go.mod (Go)
-        go_file = self.repo_path / 'go.mod'
-        if go_file.exists():
-            try:
-                with open(go_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    # Extract require statements
-                    requires = re.findall(r'require\s+([^\s]+)', content)
-                    dependencies['other']['go'] = requires
-            except:
-                pass
-
-        return dependencies
-
-    def _detect_license(self) -> Optional[Dict[str, str]]:
-        """Detect license file and try to identify the license type."""
-        license_patterns = ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'license', 'license.md']
-
-        for pattern in license_patterns:
-            license_path = self.repo_path / pattern
-            if license_path.exists():
-                try:
-                    with open(license_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()[:1000]  # Read first 1000 chars
-
-                        # Simple license detection
-                        license_type = 'Unknown'
-                        if 'MIT License' in content or 'MIT' in content[:200]:
-                            license_type = 'MIT'
-                        elif 'Apache License' in content:
-                            license_type = 'Apache 2.0'
-                        elif 'GNU GENERAL PUBLIC LICENSE' in content:
-                            if 'Version 3' in content:
-                                license_type = 'GPL-3.0'
-                            elif 'Version 2' in content:
-                                license_type = 'GPL-2.0'
-                        elif 'BSD' in content[:200]:
-                            license_type = 'BSD'
-                        elif 'ISC License' in content:
-                            license_type = 'ISC'
-
-                        return {
-                            'file': pattern,
-                            'type': license_type,
-                            'preview': content[:500]
-                        }
+                    content = readme_path.read_text(encoding='utf-8', errors='ignore')
+                    return {
+                        'file': pattern,
+                        'content': content[:5000],
+                        'full_length': len(content)
+                    }
                 except:
                     continue
 
