@@ -15,7 +15,7 @@ export default function QuickStartGuide({
   dependencies,
   frameworks,
   databases,
-  readme,
+  readme: _readme,
 }: QuickStartGuideProps) {
   // Determine primary language
   const primaryLanguage = Object.entries(languages || {})

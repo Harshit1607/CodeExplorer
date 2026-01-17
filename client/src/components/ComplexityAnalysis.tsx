@@ -11,9 +11,14 @@ interface FileMetadata {
 
 interface ComplexityAnalysisProps {
   files: { [key: string]: FileMetadata };
+  highlightTarget?: {
+    filePath: string;
+    type: string;
+    name: string;
+  } | null;
 }
 
-export default function ComplexityAnalysis({ files }: ComplexityAnalysisProps) {
+export default function ComplexityAnalysis({ files, highlightTarget: _highlightTarget }: ComplexityAnalysisProps) {
   if (!files || Object.keys(files).length === 0) {
     return (
       <div className="text-center py-12 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
