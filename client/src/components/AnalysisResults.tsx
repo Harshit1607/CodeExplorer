@@ -8,6 +8,7 @@ import DependenciesSection from './DependenciesSection';
 import KeyFilesSection from './KeyFilesSection';
 import FileDependencies from './FileDependencies';
 import GlobalSearch from './GlobalSearch';
+import RepoChat from './RepoChat';
 
 interface AnalysisResultsProps {
   data: any;
@@ -35,6 +36,7 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
 
   const tabs = [
     { id: 'quickstart', label: 'Quick Start', icon: '🚀' },
+    { id: 'chat', label: 'Chat', icon: '💬' },
     { id: 'complexity', label: 'Complexity', icon: '🎯' },
     { id: 'overview', label: 'Overview', icon: '📊' },
     { id: 'structure', label: 'File Structure', icon: '📁' },
@@ -116,6 +118,10 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
               databases={structureAnalysis?.databases}
               readme={structureAnalysis?.readme}
             />
+          )}
+
+          {activeTab === 'chat' && (
+            <RepoChat analysisData={data} />
           )}
 
           {activeTab === 'complexity' && (
