@@ -10,11 +10,20 @@ interface RepoChatProps {
   analysisData: any;
 }
 
+// Error types for different scenarios
+interface ErrorInfo {
+  message: string;
+  type: 'rate_limit' | 'auth' | 'unavailable' | 'too_large' | 'generic';
+  canRetry: boolean;
+  retryAfter?: number;
+}
+
 export default function RepoChat({ analysisData }: RepoChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<ErrorInfo | null>(null);
+  const [retryCountdown, setRetryCountdown] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -26,13 +35,69 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
     scrollToBottom();
   }, [messages]);
 
+  // Countdown timer for rate limit
+  useEffect(() => {
+    if (retryCountdown > 0) {
+      const timer = setTimeout(() => setRetryCountdown(retryCountdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (retryCountdown === 0 && error?.type === 'rate_limit') {
+      setError(null);
+    }
+  }, [retryCountdown, error]);
+
+  const parseError = (err: any): ErrorInfo => {
+    const status = err.response?.status;
+    const detail = err.response?.data?.detail || '';
+
+    switch (status) {
+      case 429:
+        return {
+          message: 'Rate limit reached. Please wait before sending another message.',
+          type: 'rate_limit',
+          canRetry: true,
+          retryAfter: 30,
+        };
+      case 401:
+        return {
+          message: 'AI service authentication failed. Please contact support.',
+          type: 'auth',
+          canRetry: false,
+        };
+      case 503:
+        return {
+          message: 'AI service is temporarily unavailable. Please try again later.',
+          type: 'unavailable',
+          canRetry: true,
+        };
+      case 400:
+        if (detail.includes('too large')) {
+          return {
+            message: 'The repository is too large for chat. Try asking about specific files.',
+            type: 'too_large',
+            canRetry: false,
+          };
+        }
+        return {
+          message: detail || 'Invalid request. Please try rephrasing your question.',
+          type: 'generic',
+          canRetry: true,
+        };
+      default:
+        return {
+          message: detail || 'Something went wrong. Please try again.',
+          type: 'generic',
+          canRetry: true,
+        };
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || retryCountdown > 0) return;
 
     const userMessage = input.trim();
     setInput('');
-    setError('');
+    setError(null);
 
     // Add user message
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
@@ -50,7 +115,13 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
       setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
     } catch (err: any) {
       console.error('Chat error:', err);
-      setError(err.response?.data?.detail || 'Failed to get response. Please try again.');
+      const errorInfo = parseError(err);
+      setError(errorInfo);
+
+      if (errorInfo.retryAfter) {
+        setRetryCountdown(errorInfo.retryAfter);
+      }
+
       // Remove the user message if we failed
       setMessages(prev => prev.slice(0, -1));
     } finally {
@@ -134,8 +205,38 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
         )}
 
         {error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
-            <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
+          <div className={`rounded-lg p-3 ${
+            error.type === 'rate_limit'
+              ? 'bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800'
+              : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
+          }`}>
+            <div className="flex items-start gap-2">
+              <span className="text-lg">
+                {error.type === 'rate_limit' ? '⏳' : error.type === 'unavailable' ? '🔧' : '⚠️'}
+              </span>
+              <div className="flex-1">
+                <p className={`text-sm font-medium ${
+                  error.type === 'rate_limit'
+                    ? 'text-yellow-800 dark:text-yellow-200'
+                    : 'text-red-700 dark:text-red-300'
+                }`}>
+                  {error.message}
+                </p>
+                {retryCountdown > 0 && (
+                  <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+                    You can try again in {retryCountdown} seconds
+                  </p>
+                )}
+                {error.canRetry && retryCountdown === 0 && (
+                  <button
+                    onClick={() => setError(null)}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1"
+                  >
+                    Dismiss
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
@@ -150,8 +251,8 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about the repository..."
-            disabled={isLoading}
+            placeholder={retryCountdown > 0 ? `Wait ${retryCountdown}s...` : "Ask about the repository..."}
+            disabled={isLoading || retryCountdown > 0}
             className="flex-1 px-4 py-2 bg-slate-100 dark:bg-slate-700 border-0 rounded-full
                      text-slate-900 dark:text-white placeholder-slate-400
                      focus:ring-2 focus:ring-blue-500 focus:outline-none
@@ -159,7 +260,7 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
           />
           <button
             type="submit"
-            disabled={isLoading || !input.trim()}
+            disabled={isLoading || !input.trim() || retryCountdown > 0}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-full
                      disabled:opacity-50 disabled:cursor-not-allowed
                      transition-colors flex items-center gap-2"

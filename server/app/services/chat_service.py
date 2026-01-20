@@ -129,7 +129,41 @@ Guidelines:
         )
         return response.choices[0].message.content
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get response from AI: {str(e)}"
-        )
+        error_msg = str(e).lower()
+
+        # Rate limit error
+        if "rate_limit" in error_msg or "rate limit" in error_msg or "429" in error_msg:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit reached. Please wait a moment and try again."
+            )
+        # API key issues
+        elif "invalid_api_key" in error_msg or "authentication" in error_msg or "401" in error_msg:
+            raise HTTPException(
+                status_code=401,
+                detail="AI service authentication failed. Please contact support."
+            )
+        # Model not available
+        elif "model_not_found" in error_msg or "model not found" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="AI model temporarily unavailable. Please try again later."
+            )
+        # Context too long
+        elif "context_length" in error_msg or "too long" in error_msg or "token" in error_msg:
+            raise HTTPException(
+                status_code=400,
+                detail="The repository is too large to analyze in chat. Try asking about specific files."
+            )
+        # Service unavailable
+        elif "service_unavailable" in error_msg or "503" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="AI service is temporarily unavailable. Please try again later."
+            )
+        # Generic error
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to get AI response. Please try again."
+            )
