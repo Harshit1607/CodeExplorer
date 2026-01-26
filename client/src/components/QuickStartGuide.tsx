@@ -6,6 +6,8 @@ interface QuickStartGuideProps {
   frameworks?: { frontend: string[]; backend: string[] };
   databases?: string[];
   readme?: { content: string };
+  packageManager?: string;
+  runScripts?: { [key: string]: string };
 }
 
 export default function QuickStartGuide({
@@ -15,6 +17,8 @@ export default function QuickStartGuide({
   dependencies,
   frameworks,
   databases,
+  packageManager: detectedPM,
+  runScripts,
 }: QuickStartGuideProps) {
   // Determine primary language
   const primaryLanguage = Object.entries(languages || {})
@@ -40,10 +44,8 @@ export default function QuickStartGuide({
   const hasMakefile = keyFiles.some(f => f.toLowerCase() === 'makefile');
   const hasEnvExample = keyFiles.some(f => f.includes('.env.example') || f.includes('.env.sample'));
 
-  // Detect package manager
-  const hasYarnLock = keyFiles.some(f => f.includes('yarn.lock'));
-  const hasPnpmLock = keyFiles.some(f => f.includes('pnpm-lock.yaml'));
-  const packageManager = hasPnpmLock ? 'pnpm' : hasYarnLock ? 'yarn' : 'npm';
+  // Use detected package manager from analysis, or fall back to npm
+  const packageManager = detectedPM || 'npm';
 
   // Detect monorepo
   const hasClientDir = keyFiles.some(f => f.startsWith('client/') || f.startsWith('frontend/'));
@@ -70,7 +72,14 @@ export default function QuickStartGuide({
   };
 
   const getRunCommand = () => {
-    // These are common conventions but may not be accurate
+    // Use actual scripts from package.json if available
+    if (runScripts) {
+      if (runScripts.dev) return `${packageManager} run dev`;
+      if (runScripts.serve) return `${packageManager} run serve`;
+      if (runScripts.start) return `${packageManager} start`;
+    }
+
+    // Fall back to framework-based guesses
     if (frontendFrameworks.includes('Next.js')) return `${packageManager} run dev`;
     if (frontendFrameworks.includes('React') || frontendFrameworks.includes('Vite')) return `${packageManager} run dev`;
     if (frontendFrameworks.includes('Vue.js')) return `${packageManager} run dev`;

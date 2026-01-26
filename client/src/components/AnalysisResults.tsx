@@ -119,6 +119,8 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
               frameworks={structureAnalysis?.frameworks}
               databases={structureAnalysis?.databases}
               readme={structureAnalysis?.readme}
+              packageManager={structureAnalysis?.package_manager}
+              runScripts={structureAnalysis?.run_scripts}
             />
           )}
 

@@ -56,7 +56,7 @@ function App() {
       <footer className="mt-16 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <p className="text-center text-sm text-slate-600 dark:text-slate-400">
-            CodeExplorer - Free and open-source repository analysis tool
+            CodeExplorer - Free repository analysis tool
           </p>
         </div>
       </footer>

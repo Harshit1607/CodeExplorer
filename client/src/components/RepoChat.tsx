@@ -132,9 +132,9 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
 
   const suggestedQuestions = [
     "What does this repository do?",
-    "What are the main entry points?",
-    "What frameworks does this project use?",
-    "How is the code organized?",
+    "Explain how the main entry point works",
+    "How does the authentication flow work?",
+    "Show me the key functions and explain what they do",
   ];
 
   return (
@@ -146,7 +146,7 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
           <h3 className="font-semibold text-slate-900 dark:text-white">Chat with Repository</h3>
         </div>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Ask questions about the codebase structure, dependencies, and more
+          Ask about code syntax, implementation details, how functions work, and more
         </p>
       </div>
 

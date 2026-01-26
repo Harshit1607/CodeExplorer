@@ -114,6 +114,8 @@ class CodeAnalyzer:
             "files": self.files,
             "file_dependencies": file_dependencies,
             "readme": self._extract_readme(),
+            "package_manager": self._detect_package_manager(),
+            "run_scripts": self._extract_run_scripts(),
         }
 
     def _get_source_files(self) -> List[Path]:
@@ -131,6 +133,9 @@ class CodeAnalyzer:
 
         return result
 
+    # Maximum content size to store (in characters) - ~2000 tokens worth
+    MAX_CONTENT_SIZE = 8000
+
     def _analyze_file(self, path: Path) -> Optional[Dict]:
         """Analyze a single source file."""
         try:
@@ -145,7 +150,10 @@ class CodeAnalyzer:
                 "imports": [],
                 "functions": [],
                 "classes": [],
-                "has_main": False
+                "has_main": False,
+                # Store truncated content for LLM context
+                "content": content[:self.MAX_CONTENT_SIZE] if len(content) <= self.MAX_CONTENT_SIZE else content[:self.MAX_CONTENT_SIZE] + "\n... [truncated]",
+                "content_truncated": len(content) > self.MAX_CONTENT_SIZE
             }
 
             if ext == ".py":
@@ -826,5 +834,66 @@ class CodeAnalyzer:
                     }
                 except:
                     continue
+
+        return None
+
+    def _detect_package_manager(self) -> Optional[str]:
+        """Detect the package manager used in the project."""
+        # Check for lock files (most reliable indicator)
+        lock_files = {
+            'pnpm-lock.yaml': 'pnpm',
+            'yarn.lock': 'yarn',
+            'bun.lockb': 'bun',
+            'package-lock.json': 'npm',
+        }
+
+        for lock_file, manager in lock_files.items():
+            if (self.repo_path / lock_file).exists():
+                return manager
+
+        # Check if package.json has packageManager field
+        pkg_json_path = self.repo_path / 'package.json'
+        if pkg_json_path.exists():
+            try:
+                with open(pkg_json_path, 'r', encoding='utf-8') as f:
+                    pkg = json.load(f)
+                    if 'packageManager' in pkg:
+                        pm = pkg['packageManager']
+                        if 'pnpm' in pm:
+                            return 'pnpm'
+                        elif 'yarn' in pm:
+                            return 'yarn'
+                        elif 'bun' in pm:
+                            return 'bun'
+                        elif 'npm' in pm:
+                            return 'npm'
+            except:
+                pass
+
+        # Default to npm if package.json exists
+        if pkg_json_path.exists():
+            return 'npm'
+
+        return None
+
+    def _extract_run_scripts(self) -> Optional[Dict[str, str]]:
+        """Extract scripts from package.json."""
+        pkg_json_path = self.repo_path / 'package.json'
+        if not pkg_json_path.exists():
+            return None
+
+        try:
+            with open(pkg_json_path, 'r', encoding='utf-8') as f:
+                pkg = json.load(f)
+                scripts = pkg.get('scripts', {})
+                if scripts:
+                    # Return important scripts
+                    important_scripts = {}
+                    for key in ['start', 'dev', 'serve', 'build', 'test', 'lint']:
+                        if key in scripts:
+                            important_scripts[key] = scripts[key]
+                    return important_scripts if important_scripts else None
+        except:
+            pass
 
         return None
