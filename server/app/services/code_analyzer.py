@@ -74,6 +74,8 @@ class CodeAnalyzer:
         self.all_imports: List[str] = []
         self.all_npm_deps: Set[str] = set()
         self.all_python_deps: Set[str] = set()
+        # Temporary storage for full file contents (used for call graph, cleared after)
+        self._file_contents: Dict[str, str] = {}
 
     def analyze(self) -> Dict[str, Any]:
         """Main analysis entry point."""
@@ -101,6 +103,23 @@ class CodeAnalyzer:
         # Build file dependency graph
         file_dependencies = self._build_file_dependencies()
 
+        # Build call graph (function-to-function relationships)
+        call_graph = self._build_call_graph(file_dependencies)
+
+        # Clear temporary content storage to free memory
+        self._file_contents.clear()
+
+        # Build architecture model
+        from app.services.architecture_service import ArchitectureAnalyzer
+        arch_data = {
+            'files': self.files,
+            'frameworks': frameworks,
+            'databases': databases,
+            'file_dependencies': file_dependencies,
+            'entry_points': self._entry_points(),
+        }
+        architecture = ArchitectureAnalyzer(arch_data).generate()
+
         return {
             "languages": self._language_stats(),
             "frameworks": frameworks,
@@ -113,6 +132,8 @@ class CodeAnalyzer:
             "complexity": self._complexity(),
             "files": self.files,
             "file_dependencies": file_dependencies,
+            "call_graph": call_graph,
+            "architecture": architecture,
             "readme": self._extract_readme(),
             "package_manager": self._detect_package_manager(),
             "run_scripts": self._extract_run_scripts(),
@@ -141,6 +162,10 @@ class CodeAnalyzer:
         try:
             content = path.read_text(encoding="utf-8", errors="ignore")
             ext = path.suffix.lower()
+
+            # Store full content for call graph extraction (will be cleared after analysis)
+            rel = str(path.relative_to(self.repo_path))
+            self._file_contents[rel] = content
 
             meta = {
                 "extension": ext,
@@ -897,3 +922,302 @@ class CodeAnalyzer:
             pass
 
         return None
+
+    # ============================================================
+    # Call Graph Methods - Function-to-function call relationships
+    # ============================================================
+
+    def _build_call_graph(self, file_dependencies: Dict[str, Dict]) -> Dict[str, Dict[str, Any]]:
+        """
+        Build a call graph showing which functions call which other functions.
+        Returns a dict mapping qualified function IDs to their call relationships.
+        """
+        call_graph: Dict[str, Dict[str, Any]] = {}
+
+        # Phase 1: Build registry of all known functions
+        # Maps function_name -> list of qualified_ids (handles name collisions)
+        func_registry: Dict[str, List[str]] = {}
+
+        for file_path, meta in self.files.items():
+            language = meta.get('language', 'Unknown')
+            for func_name in meta.get('functions', []):
+                qualified_id = f"{file_path}::{func_name}"
+                call_graph[qualified_id] = {
+                    "name": func_name,
+                    "file": file_path,
+                    "calls": [],
+                    "called_by": [],
+                    "language": language,
+                }
+                if func_name not in func_registry:
+                    func_registry[func_name] = []
+                func_registry[func_name].append(qualified_id)
+
+        # Phase 2: Extract call relationships for each file
+        for file_path, meta in self.files.items():
+            content = self._file_contents.get(file_path, '')
+            if not content:
+                continue
+
+            ext = meta.get('extension', '')
+
+            if ext == '.py':
+                self._extract_python_calls(file_path, content, call_graph, func_registry, file_dependencies)
+            elif ext in {'.js', '.jsx', '.ts', '.tsx'}:
+                self._extract_js_calls(file_path, content, call_graph, func_registry, file_dependencies)
+            elif ext == '.java':
+                self._extract_java_calls(file_path, content, call_graph, func_registry, file_dependencies)
+            elif ext == '.go':
+                self._extract_go_calls(file_path, content, call_graph, func_registry, file_dependencies)
+
+        # Phase 3: Build reverse mapping (called_by)
+        for qualified_id, info in call_graph.items():
+            for callee_id in info['calls']:
+                if callee_id in call_graph:
+                    if qualified_id not in call_graph[callee_id]['called_by']:
+                        call_graph[callee_id]['called_by'].append(qualified_id)
+
+        return call_graph
+
+    def _extract_python_calls(self, file_path: str, content: str,
+                               call_graph: Dict, func_registry: Dict,
+                               file_dependencies: Dict):
+        """Use AST to extract function calls within each function body in Python."""
+        try:
+            tree = ast.parse(content)
+        except:
+            return
+
+        # Get resolved dependencies for this file
+        resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+
+        # Walk to find all function definitions
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                caller_id = f"{file_path}::{node.name}"
+                if caller_id not in call_graph:
+                    continue
+
+                # Walk the function body looking for Call nodes
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call):
+                        callee_name = self._extract_call_name(child)
+                        if callee_name and callee_name in func_registry:
+                            # Resolve to qualified IDs
+                            resolved = self._resolve_call(
+                                callee_name, file_path, func_registry, resolved_deps
+                            )
+                            for target_id in resolved:
+                                if target_id != caller_id:  # Skip self-recursion noise
+                                    if target_id not in call_graph[caller_id]['calls']:
+                                        call_graph[caller_id]['calls'].append(target_id)
+
+    def _extract_call_name(self, call_node: ast.Call) -> Optional[str]:
+        """Extract the function name from an ast.Call node."""
+        func = call_node.func
+        if isinstance(func, ast.Name):
+            return func.id  # Simple call: foo()
+        elif isinstance(func, ast.Attribute):
+            return func.attr  # Method call: obj.foo() -> "foo"
+        return None
+
+    def _extract_js_calls(self, file_path: str, content: str,
+                          call_graph: Dict, func_registry: Dict,
+                          file_dependencies: Dict):
+        """Use regex to find function calls within function bodies in JS/TS."""
+        resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+
+        # Find function boundaries using regex
+        func_pattern = re.compile(
+            r'(?:function\s+(\w+)\s*\([^)]*\)\s*\{|'        # function foo() {
+            r'(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|'  # const foo = () =>
+            r'(?:const|let|var)\s+(\w+)\s*=\s*function\s*\(|'  # const foo = function(
+            r'(\w+)\s*\([^)]*\)\s*\{)',                         # method() { in class
+            re.MULTILINE
+        )
+
+        functions_in_file = []
+
+        for match in func_pattern.finditer(content):
+            func_name = match.group(1) or match.group(2) or match.group(3) or match.group(4)
+            if func_name:
+                start_pos = match.start()
+                # Find body end by counting braces
+                body_start = content.find('{', match.end() - 10)
+                if body_start == -1:
+                    # Arrow function without braces - find end of expression
+                    body_end = self._find_arrow_end(content, match.end())
+                else:
+                    body_end = self._find_brace_end(content, body_start)
+                if body_end > start_pos:
+                    functions_in_file.append((func_name, content[start_pos:body_end]))
+
+        # Build a regex pattern for all known function names (for efficiency)
+        known_names = set(func_registry.keys())
+        if not known_names:
+            return
+
+        # For each function body, search for calls to known functions
+        for func_name, body in functions_in_file:
+            caller_id = f"{file_path}::{func_name}"
+            if caller_id not in call_graph:
+                continue
+
+            for known_name in known_names:
+                # Skip very short names to avoid false positives
+                if len(known_name) < 2:
+                    continue
+                if re.search(r'\b' + re.escape(known_name) + r'\s*\(', body):
+                    resolved = self._resolve_call(known_name, file_path, func_registry, resolved_deps)
+                    for target_id in resolved:
+                        if target_id != caller_id:
+                            if target_id not in call_graph[caller_id]['calls']:
+                                call_graph[caller_id]['calls'].append(target_id)
+
+    def _extract_java_calls(self, file_path: str, content: str,
+                            call_graph: Dict, func_registry: Dict,
+                            file_dependencies: Dict):
+        """Extract function calls in Java files."""
+        resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+
+        # Find method boundaries
+        method_pattern = re.compile(
+            r'(?:public|private|protected)?\s*(?:static)?\s*\w+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+\s*)?\{',
+            re.MULTILINE
+        )
+
+        methods_in_file = []
+        for match in method_pattern.finditer(content):
+            method_name = match.group(1)
+            if method_name:
+                body_start = content.find('{', match.start())
+                if body_start != -1:
+                    body_end = self._find_brace_end(content, body_start)
+                    if body_end > body_start:
+                        methods_in_file.append((method_name, content[body_start:body_end]))
+
+        known_names = set(func_registry.keys())
+        for method_name, body in methods_in_file:
+            caller_id = f"{file_path}::{method_name}"
+            if caller_id not in call_graph:
+                continue
+
+            for known_name in known_names:
+                if len(known_name) < 2:
+                    continue
+                if re.search(r'\b' + re.escape(known_name) + r'\s*\(', body):
+                    resolved = self._resolve_call(known_name, file_path, func_registry, resolved_deps)
+                    for target_id in resolved:
+                        if target_id != caller_id:
+                            if target_id not in call_graph[caller_id]['calls']:
+                                call_graph[caller_id]['calls'].append(target_id)
+
+    def _extract_go_calls(self, file_path: str, content: str,
+                          call_graph: Dict, func_registry: Dict,
+                          file_dependencies: Dict):
+        """Extract function calls in Go files."""
+        resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+
+        # Find function boundaries
+        func_pattern = re.compile(r'func\s+(?:\([^)]+\)\s+)?(\w+)\s*\([^)]*\)\s*(?:\([^)]*\)\s*)?\{', re.MULTILINE)
+
+        funcs_in_file = []
+        for match in func_pattern.finditer(content):
+            func_name = match.group(1)
+            if func_name:
+                body_start = content.find('{', match.start())
+                if body_start != -1:
+                    body_end = self._find_brace_end(content, body_start)
+                    if body_end > body_start:
+                        funcs_in_file.append((func_name, content[body_start:body_end]))
+
+        known_names = set(func_registry.keys())
+        for func_name, body in funcs_in_file:
+            caller_id = f"{file_path}::{func_name}"
+            if caller_id not in call_graph:
+                continue
+
+            for known_name in known_names:
+                if len(known_name) < 2:
+                    continue
+                if re.search(r'\b' + re.escape(known_name) + r'\s*\(', body):
+                    resolved = self._resolve_call(known_name, file_path, func_registry, resolved_deps)
+                    for target_id in resolved:
+                        if target_id != caller_id:
+                            if target_id not in call_graph[caller_id]['calls']:
+                                call_graph[caller_id]['calls'].append(target_id)
+
+    def _find_brace_end(self, content: str, start: int) -> int:
+        """Find matching closing brace from a position."""
+        depth = 0
+        i = start
+        in_string = False
+        string_char = None
+
+        while i < len(content):
+            char = content[i]
+
+            # Handle strings
+            if char in '"\'`' and (i == 0 or content[i-1] != '\\'):
+                if not in_string:
+                    in_string = True
+                    string_char = char
+                elif char == string_char:
+                    in_string = False
+                    string_char = None
+
+            if not in_string:
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return i + 1
+            i += 1
+        return len(content)
+
+    def _find_arrow_end(self, content: str, start: int) -> int:
+        """Find end of arrow function expression (no braces)."""
+        # Look for common terminators: semicolon, newline followed by non-continuation
+        i = start
+        paren_depth = 0
+
+        while i < len(content):
+            char = content[i]
+            if char == '(':
+                paren_depth += 1
+            elif char == ')':
+                paren_depth -= 1
+            elif paren_depth == 0:
+                if char == ';':
+                    return i
+                elif char == '\n':
+                    # Check if next non-whitespace is a continuation
+                    j = i + 1
+                    while j < len(content) and content[j] in ' \t':
+                        j += 1
+                    if j < len(content) and content[j] not in '.?:&|':
+                        return i
+            i += 1
+        return len(content)
+
+    def _resolve_call(self, func_name: str, current_file: str,
+                      func_registry: Dict, resolved_deps: Set[str]) -> List[str]:
+        """Resolve a function name to qualified IDs, preferring same-file match."""
+        candidates = func_registry.get(func_name, [])
+        if not candidates:
+            return []
+
+        # Prefer same-file match
+        same_file = [c for c in candidates if c.startswith(f"{current_file}::")]
+        if same_file:
+            return same_file
+
+        # Then prefer files that are imported by current file
+        imported_matches = [c for c in candidates
+                           if c.split('::')[0] in resolved_deps]
+        if imported_matches:
+            return imported_matches
+
+        # Fallback: return limited candidates to avoid explosion
+        return candidates[:3]

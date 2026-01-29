@@ -10,6 +10,8 @@ import FileDependencies from './FileDependencies';
 import GlobalSearch from './GlobalSearch';
 import RepoChat from './RepoChat';
 import SemanticSearch from './SemanticSearch';
+import CallGraph from './CallGraph';
+import ArchitectureDiagram from './ArchitectureDiagram';
 
 interface AnalysisResultsProps {
   data: any;
@@ -39,6 +41,8 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
     { id: 'quickstart', label: 'Quick Start', icon: '🚀' },
     { id: 'chat', label: 'Chat', icon: '💬' },
     { id: 'search', label: 'Search', icon: '🔍' },
+    { id: 'architecture', label: 'Architecture', icon: '🏗️' },
+    { id: 'callgraph', label: 'Call Graph', icon: '🔀' },
     { id: 'complexity', label: 'Complexity', icon: '🎯' },
     { id: 'overview', label: 'Overview', icon: '📊' },
     { id: 'structure', label: 'File Structure', icon: '📁' },
@@ -130,6 +134,19 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
 
           {activeTab === 'search' && (
             <SemanticSearch analysisData={data} />
+          )}
+
+          {activeTab === 'architecture' && (
+            <ArchitectureDiagram
+              architecture={structureAnalysis?.architecture || { nodes: [], edges: [], layers: [] }}
+            />
+          )}
+
+          {activeTab === 'callgraph' && (
+            <CallGraph
+              callGraph={structureAnalysis?.call_graph || {}}
+              files={structureAnalysis?.files || {}}
+            />
           )}
 
           {activeTab === 'complexity' && (
