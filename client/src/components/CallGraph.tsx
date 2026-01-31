@@ -168,9 +168,12 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   // Build and render D3 graph
   useEffect(() => {
     if (!svgRef.current || displayMode !== 'graph') return;
+    if (!callGraph || Object.keys(callGraph).length === 0) return;
 
     // Clear previous content
     d3.select(svgRef.current).selectAll('*').remove();
+
+    try {
 
     const functionsToShow = new Set<string>();
     const linksData: Array<{ source: string; target: string }> = [];
@@ -188,12 +191,17 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       let connectionCount = 0;
       const maxConnections = 500;
 
-      Object.entries(callGraph).forEach(([funcId, info]) => {
+      Object.entries(callGraph || {}).forEach(([funcId, info]) => {
         if (connectionCount >= maxConnections) return;
-        if (info.calls.length > 0 || info.called_by.length > 0) {
+        if (!info) return;
+
+        const calls = info.calls || [];
+        const calledBy = info.called_by || [];
+
+        if (calls.length > 0 || calledBy.length > 0) {
           functionsToShow.add(funcId);
-          info.calls.forEach(callee => {
-            if (connectionCount < maxConnections) {
+          calls.forEach(callee => {
+            if (connectionCount < maxConnections && callGraph[callee]) {
               functionsToShow.add(callee);
               linksData.push({ source: funcId, target: callee });
               connectionCount++;
@@ -205,16 +213,23 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       // Show selected function and its connections up to depth
       const funcsToExpand = expandedFunctions.size > 0 ? expandedFunctions : new Set([selectedFunction!]);
       const addedLinks = new Set<string>();
+      const visited = new Set<string>(); // Prevent infinite recursion
 
       const collectConnections = (funcId: string, depth: number, direction: 'calls' | 'calledBy') => {
         if (depth > graphDepth) return;
+        if (visited.has(`${funcId}-${direction}-${depth}`)) return; // Prevent revisiting
+        visited.add(`${funcId}-${direction}-${depth}`);
+
         functionsToShow.add(funcId);
 
         const info = callGraph[funcId];
         if (!info) return;
 
         if (direction === 'calls') {
-          info.calls.forEach(callee => {
+          (info.calls || []).forEach(callee => {
+            // Only add link if callee exists in callGraph
+            if (!callGraph[callee]) return;
+
             const linkKey = `${funcId}->${callee}`;
             if (!addedLinks.has(linkKey)) {
               addedLinks.add(linkKey);
@@ -225,7 +240,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
             }
           });
         } else {
-          info.called_by.forEach(caller => {
+          (info.called_by || []).forEach(caller => {
+            // Only add link if caller exists in callGraph
+            if (!callGraph[caller]) return;
+
             const linkKey = `${caller}->${funcId}`;
             if (!addedLinks.has(linkKey)) {
               addedLinks.add(linkKey);
@@ -239,39 +257,57 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       };
 
       funcsToExpand.forEach(funcId => {
-        functionsToShow.add(funcId);
-        collectConnections(funcId, 0, 'calls');
-        collectConnections(funcId, 0, 'calledBy');
+        if (callGraph[funcId]) {
+          functionsToShow.add(funcId);
+          collectConnections(funcId, 0, 'calls');
+          collectConnections(funcId, 0, 'calledBy');
+        }
       });
     }
 
     if (functionsToShow.size === 0) return;
 
+    // Filter to only include functions that exist in callGraph
+    const validFunctions = Array.from(functionsToShow).filter(f => callGraph[f]);
+
+    if (validFunctions.length === 0) return;
+
     // Get all files for color assignment
-    const allFiles = [...new Set(Array.from(functionsToShow).map(f => callGraph[f]?.file || ''))];
+    const allFiles = [...new Set(validFunctions.map(f => callGraph[f]?.file || ''))];
+
+    // Create a set of valid function IDs for quick lookup
+    const validFunctionSet = new Set(validFunctions);
 
     // Create nodes array
-    const nodes: GraphNode[] = Array.from(functionsToShow).map(funcId => {
-      const info = callGraph[funcId] || { name: funcId.split('::').pop() || funcId, file: '', calls: [], called_by: [], language: 'Unknown' };
-      const isCallee = selectedFunction ? callGraph[selectedFunction]?.calls.includes(funcId) : false;
-      const isCaller = selectedFunction ? callGraph[selectedFunction]?.called_by.includes(funcId) : false;
+    const nodes: GraphNode[] = validFunctions.map(funcId => {
+      const info = callGraph[funcId];
+      if (!info) return null;
+
+      const calls = info.calls || [];
+      const calledBy = info.called_by || [];
+      const selectedInfo = selectedFunction ? callGraph[selectedFunction] : null;
+
+      const isCallee = selectedInfo ? (selectedInfo.calls || []).includes(funcId) : false;
+      const isCaller = selectedInfo ? (selectedInfo.called_by || []).includes(funcId) : false;
 
       return {
         id: funcId,
-        label: info.name,
-        file: info.file,
-        fileShort: getFileName(info.file),
+        label: info.name || funcId.split('::').pop() || funcId,
+        file: info.file || '',
+        fileShort: getFileName(info.file || ''),
         isSelected: funcId === selectedFunction,
         isCaller,
         isCallee,
-        callsCount: info.calls.length,
-        calledByCount: info.called_by.length,
-        language: info.language,
+        callsCount: calls.length,
+        calledByCount: calledBy.length,
+        language: info.language || 'Unknown',
       };
-    });
+    }).filter((n): n is GraphNode => n !== null);
 
-    // Create links array
-    const links: GraphLink[] = linksData.map(l => ({ source: l.source, target: l.target }));
+    // Create links array - only include links where both source and target exist
+    const links: GraphLink[] = linksData
+      .filter(l => validFunctionSet.has(l.source) && validFunctionSet.has(l.target))
+      .map(l => ({ source: l.source, target: l.target }));
 
     // Setup SVG
     const svg = d3.select(svgRef.current);
@@ -414,6 +450,13 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     return () => {
       simulation.stop();
     };
+    } catch (error) {
+      console.error('Error rendering call graph:', error);
+      // Clear SVG on error to prevent broken state
+      if (svgRef.current) {
+        d3.select(svgRef.current).selectAll('*').remove();
+      }
+    }
   }, [callGraph, displayMode, graphMode, selectedFunction, expandedFunctions, graphDepth, getNodeColor, handleNodeClick]);
 
   // Empty state
@@ -559,9 +602,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                         {getFileIcon(file)} {getFileName(file)}
                       </div>
                       {funcs
-                        .filter(f => filteredFunctions.includes(f))
+                        .filter(f => filteredFunctions.includes(f) && callGraph[f])
                         .map(funcId => {
                           const info = callGraph[funcId];
+                          if (!info) return null;
                           const isSelected = funcId === selectedFunction;
                           return (
                             <button
@@ -575,7 +619,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                             >
                               <span className="truncate block">{info.name}</span>
                               <span className="text-xs text-slate-400">
-                                {info.calls.length}↗ {info.called_by.length}↙
+                                {(info.calls || []).length}↗ {(info.called_by || []).length}↙
                               </span>
                             </button>
                           );
@@ -583,26 +627,29 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     </div>
                   ))
               ) : (
-                filteredFunctions.map(funcId => {
-                  const info = callGraph[funcId];
-                  const isSelected = funcId === selectedFunction;
-                  return (
-                    <button
-                      key={funcId}
-                      onClick={() => handleFunctionSelect(funcId)}
-                      className={`w-full text-left px-3 py-1.5 text-sm rounded transition-colors ${
-                        isSelected
-                          ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200'
-                          : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      <span className="truncate block">{info.name}</span>
-                      <span className="text-xs text-slate-400 block truncate">
-                        {getFileName(info.file)}
-                      </span>
-                    </button>
-                  );
-                })
+                filteredFunctions
+                  .filter(funcId => callGraph[funcId])
+                  .map(funcId => {
+                    const info = callGraph[funcId];
+                    if (!info) return null;
+                    const isSelected = funcId === selectedFunction;
+                    return (
+                      <button
+                        key={funcId}
+                        onClick={() => handleFunctionSelect(funcId)}
+                        className={`w-full text-left px-3 py-1.5 text-sm rounded transition-colors ${
+                          isSelected
+                            ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200'
+                            : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        <span className="truncate block">{info.name}</span>
+                        <span className="text-xs text-slate-400 block truncate">
+                          {getFileName(info.file || '')}
+                        </span>
+                      </button>
+                    );
+                  })
               )}
             </div>
           </div>
