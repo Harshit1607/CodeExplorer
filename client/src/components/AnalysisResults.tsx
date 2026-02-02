@@ -66,21 +66,21 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
 
       {/* Navigation Target Info */}
       {searchNavigationTarget && (
-        <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg p-3 flex items-center justify-between">
+        <div className="bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-blue-600 dark:text-blue-400">
+            <span className="text-primary-600 dark:text-primary-400">
               {searchNavigationTarget.type === 'file' ? '📄' : searchNavigationTarget.type === 'function' ? '⚡' : '🔷'}
             </span>
             <div>
-              <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+              <p className="text-sm font-medium text-primary-900 dark:text-primary-100">
                 Navigated to: <span className="font-semibold">{searchNavigationTarget.name}</span>
               </p>
-              <p className="text-xs text-blue-600 dark:text-blue-400">{searchNavigationTarget.filePath}</p>
+              <p className="text-xs text-primary-600 dark:text-primary-400">{searchNavigationTarget.filePath}</p>
             </div>
           </div>
           <button
             onClick={() => setSearchNavigationTarget(null)}
-            className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200"
+            className="text-primary-600 dark:text-primary-400 hover:text-primary-800 dark:hover:text-primary-200 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -89,20 +89,20 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
         </div>
       )}
 
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-        <div className="border-b border-slate-200 dark:border-slate-700">
-          <nav className="flex overflow-x-auto">
+      <div className="bg-[var(--bg-secondary)] rounded-xl shadow-lg border border-[var(--border-color)] overflow-hidden">
+        <div className="border-b border-[var(--border-color)]">
+          <nav className="flex overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 className={`
-                  px-6 py-4 text-sm font-medium whitespace-nowrap
-                  border-b-2 transition-colors
+                  px-5 py-3.5 text-sm font-medium whitespace-nowrap
+                  border-b-2 transition-all duration-200
                   ${
                     activeTab === tab.id
-                      ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                      : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      ? 'border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50/50 dark:bg-primary-900/20'
+                      : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
                   }
                 `}
               >

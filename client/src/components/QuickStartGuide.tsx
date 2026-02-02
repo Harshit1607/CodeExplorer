@@ -102,16 +102,16 @@ export default function QuickStartGuide({
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
+        <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-2">
           🚀 Quick Start Guide
         </h3>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
+        <p className="text-sm text-[var(--text-secondary)]">
           Overview and suggested setup for this {primaryFramework || primaryLanguage} project
         </p>
       </div>
 
       {/* Important: Check Documentation First */}
-      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
         <div className="flex items-start gap-3">
           <span className="text-xl">⚠️</span>
           <div>
@@ -149,57 +149,57 @@ export default function QuickStartGuide({
       </div>
 
       {/* Project Overview */}
-      <div className="bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/20 dark:to-purple-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-6">
-        <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-3">
+      <div className="bg-gradient-to-br from-primary-50 to-accent-deepblue/10 dark:from-primary-900/20 dark:to-accent-deepblue/10 border border-primary-200 dark:border-primary-800 rounded-xl p-6">
+        <h4 className="text-md font-semibold text-[var(--text-primary)] mb-3">
           📋 Project Overview
         </h4>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
-            <p className="text-sm text-slate-600 dark:text-slate-400">Language</p>
-            <p className="text-lg font-semibold text-slate-900 dark:text-white">{primaryLanguage}</p>
+            <p className="text-sm text-[var(--text-secondary)]">Language</p>
+            <p className="text-lg font-semibold text-[var(--text-primary)]">{primaryLanguage}</p>
           </div>
           <div>
-            <p className="text-sm text-slate-600 dark:text-slate-400">Type</p>
-            <p className="text-lg font-semibold text-slate-900 dark:text-white">
+            <p className="text-sm text-[var(--text-secondary)]">Type</p>
+            <p className="text-lg font-semibold text-[var(--text-primary)]">
               {isMonorepo ? 'Monorepo' : frontendFrameworks.length > 0 ? 'Frontend' : backendFrameworks.length > 0 ? 'Backend' : 'Project'}
             </p>
           </div>
           {hasPkgJson && (
             <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Package Manager</p>
-              <p className="text-lg font-semibold text-slate-900 dark:text-white">{packageManager}</p>
+              <p className="text-sm text-[var(--text-secondary)]">Package Manager</p>
+              <p className="text-lg font-semibold text-[var(--text-primary)]">{packageManager}</p>
             </div>
           )}
           {databases && databases.length > 0 && (
             <div>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Database</p>
-              <p className="text-lg font-semibold text-slate-900 dark:text-white">{databases[0]}</p>
+              <p className="text-sm text-[var(--text-secondary)]">Database</p>
+              <p className="text-lg font-semibold text-[var(--text-primary)]">{databases[0]}</p>
             </div>
           )}
         </div>
 
         {/* Tech Stack */}
         {(allFrameworks.length > 0 || hasDocker) && (
-          <div className="mt-4 pt-4 border-t border-blue-200 dark:border-blue-700">
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">Detected Tech Stack</p>
+          <div className="mt-4 pt-4 border-t border-primary-200 dark:border-primary-700">
+            <p className="text-sm text-[var(--text-secondary)] mb-2">Detected Tech Stack</p>
             <div className="flex flex-wrap gap-2">
               {frontendFrameworks.map((fw, idx) => (
-                <span key={`fe-${idx}`} className="px-3 py-1 rounded-full text-sm font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200">
+                <span key={`fe-${idx}`} className="px-3 py-1 rounded-full text-sm font-medium bg-accent-blue/20 text-accent-blue">
                   🎨 {fw}
                 </span>
               ))}
               {backendFrameworks.map((fw, idx) => (
-                <span key={`be-${idx}`} className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-200">
+                <span key={`be-${idx}`} className="px-3 py-1 rounded-full text-sm font-medium bg-accent-green/20 text-accent-green">
                   ⚙️ {fw}
                 </span>
               ))}
               {databases?.map((db, idx) => (
-                <span key={`db-${idx}`} className="px-3 py-1 rounded-full text-sm font-medium bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200">
+                <span key={`db-${idx}`} className="px-3 py-1 rounded-full text-sm font-medium bg-accent-orange/20 text-accent-orange">
                   🗄️ {db}
                 </span>
               ))}
               {hasDocker && (
-                <span className="px-3 py-1 rounded-full text-sm font-medium bg-cyan-100 dark:bg-cyan-900/40 text-cyan-800 dark:text-cyan-200">
+                <span className="px-3 py-1 rounded-full text-sm font-medium bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300">
                   🐳 Docker
                 </span>
               )}
@@ -209,12 +209,12 @@ export default function QuickStartGuide({
       </div>
 
       {/* Suggested Commands */}
-      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-6">
+      <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
-          <h4 className="text-md font-semibold text-slate-900 dark:text-white">
+          <h4 className="text-md font-semibold text-[var(--text-primary)]">
             💻 Suggested Commands
           </h4>
-          <span className="text-xs px-2 py-1 bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 rounded">
+          <span className="text-xs px-2 py-1 bg-[var(--bg-tertiary)] text-[var(--text-muted)] rounded-lg">
             May vary - check docs
           </span>
         </div>
@@ -222,13 +222,13 @@ export default function QuickStartGuide({
         <div className="space-y-4">
           {/* Docker option if available */}
           {hasDockerCompose && (
-            <div className="p-3 bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800 rounded-lg">
+            <div className="p-3 bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800 rounded-xl">
               <div className="flex items-center gap-2 mb-2">
                 <span>🐳</span>
                 <span className="font-medium text-cyan-900 dark:text-cyan-200">Docker (if supported)</span>
                 <span className="text-xs px-1.5 py-0.5 bg-cyan-200 dark:bg-cyan-800 text-cyan-700 dark:text-cyan-300 rounded">recommended</span>
               </div>
-              <code className="block bg-slate-800 text-green-400 px-3 py-2 rounded text-sm font-mono">
+              <code className="block bg-[#0F172A] text-accent-green px-3 py-2 rounded-lg text-sm font-mono">
                 docker-compose up
               </code>
             </div>
@@ -236,12 +236,12 @@ export default function QuickStartGuide({
 
           {/* Makefile option */}
           {hasMakefile && (
-            <div className="p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+            <div className="p-3 bg-accent-deepblue/10 border border-accent-deepblue/30 rounded-xl">
               <div className="flex items-center gap-2 mb-2">
                 <span>📜</span>
-                <span className="font-medium text-purple-900 dark:text-purple-200">Makefile available</span>
+                <span className="font-medium text-accent-deepblue">Makefile available</span>
               </div>
-              <code className="block bg-slate-800 text-green-400 px-3 py-2 rounded text-sm font-mono">
+              <code className="block bg-[#0F172A] text-accent-green px-3 py-2 rounded-lg text-sm font-mono">
                 make help  # or check Makefile for commands
               </code>
             </div>
@@ -252,8 +252,8 @@ export default function QuickStartGuide({
             <div className="space-y-3">
               {hasEnvExample && (
                 <div>
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">1. Setup environment</p>
-                  <code className="block bg-slate-800 text-green-400 px-3 py-2 rounded text-sm font-mono">
+                  <p className="text-sm font-medium text-[var(--text-primary)] mb-1">1. Setup environment</p>
+                  <code className="block bg-[#0F172A] text-accent-green px-3 py-2 rounded-lg text-sm font-mono">
                     cp .env.example .env  # then edit .env
                   </code>
                 </div>
@@ -261,10 +261,10 @@ export default function QuickStartGuide({
 
               {installCommand && (
                 <div>
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  <p className="text-sm font-medium text-[var(--text-primary)] mb-1">
                     {hasEnvExample ? '2.' : '1.'} Install dependencies
                   </p>
-                  <code className="block bg-slate-800 text-green-400 px-3 py-2 rounded text-sm font-mono">
+                  <code className="block bg-[#0F172A] text-accent-green px-3 py-2 rounded-lg text-sm font-mono">
                     {installCommand}
                   </code>
                 </div>
@@ -272,13 +272,13 @@ export default function QuickStartGuide({
 
               {runCommand && (
                 <div>
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  <p className="text-sm font-medium text-[var(--text-primary)] mb-1">
                     {hasEnvExample ? '3.' : installCommand ? '2.' : '1.'} Run the project
                   </p>
-                  <code className="block bg-slate-800 text-green-400 px-3 py-2 rounded text-sm font-mono">
+                  <code className="block bg-[#0F172A] text-accent-green px-3 py-2 rounded-lg text-sm font-mono">
                     {runCommand}
                   </code>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
                     ⚠️ This is a guess based on {primaryFramework || primaryLanguage}. Check package.json scripts or README for actual command.
                   </p>
                 </div>
@@ -288,12 +288,12 @@ export default function QuickStartGuide({
 
           {/* Monorepo note */}
           {isMonorepo && (
-            <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
               <div className="flex items-start gap-2">
                 <span>📦</span>
                 <div>
-                  <span className="font-medium text-yellow-900 dark:text-yellow-200">Monorepo detected</span>
-                  <p className="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
+                  <span className="font-medium text-amber-900 dark:text-amber-200">Monorepo detected</span>
+                  <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
                     This project has separate client and server directories. You'll likely need to run install and start commands in each directory separately. Check the README for specific instructions.
                   </p>
                 </div>
@@ -303,7 +303,7 @@ export default function QuickStartGuide({
 
           {/* No commands detected */}
           {!installCommand && !runCommand && !hasDockerCompose && !hasMakefile && (
-            <div className="text-center py-6 text-slate-500 dark:text-slate-400">
+            <div className="text-center py-6 text-[var(--text-secondary)]">
               <p>Unable to determine setup commands automatically.</p>
               <p className="text-sm mt-1">Please check the repository's README or documentation.</p>
             </div>
@@ -313,18 +313,18 @@ export default function QuickStartGuide({
 
       {/* Entry Points */}
       {entryPoints.length > 0 && (
-        <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-6">
-          <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-4">
+        <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-6">
+          <h4 className="text-md font-semibold text-[var(--text-primary)] mb-4">
             🎯 Entry Points
           </h4>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+          <p className="text-sm text-[var(--text-secondary)] mb-3">
             Start exploring the codebase from these files:
           </p>
           <div className="space-y-2">
             {entryPoints.slice(0, 5).map((file, idx) => (
-              <div key={idx} className="flex items-center gap-2 text-sm bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded px-3 py-2">
-                <span className="text-green-600 dark:text-green-400">📄</span>
-                <code className="font-mono text-slate-900 dark:text-white">{file}</code>
+              <div key={idx} className="flex items-center gap-2 text-sm bg-accent-green/10 border border-accent-green/30 rounded-lg px-3 py-2">
+                <span className="text-accent-green">📄</span>
+                <code className="font-mono text-[var(--text-primary)]">{file}</code>
               </div>
             ))}
           </div>
@@ -332,11 +332,11 @@ export default function QuickStartGuide({
       )}
 
       {/* Quick Tips */}
-      <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
-        <h4 className="text-sm font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
+      <div className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl p-4">
+        <h4 className="text-sm font-semibold text-[var(--text-primary)] mb-2 flex items-center gap-2">
           <span>💡</span> Tips
         </h4>
-        <ul className="space-y-1 text-sm text-slate-600 dark:text-slate-400">
+        <ul className="space-y-1 text-sm text-[var(--text-secondary)]">
           {hasReadme && <li>• Start by reading the <strong>README.md</strong></li>}
           {databases && databases.length > 0 && <li>• Ensure <strong>{databases[0]}</strong> is running before starting</li>}
           {primaryFramework && <li>• This uses <strong>{primaryFramework}</strong> - check their docs if unfamiliar</li>}

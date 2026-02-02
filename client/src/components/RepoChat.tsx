@@ -138,14 +138,14 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
   ];
 
   return (
-    <div className="flex flex-col h-[500px] bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div className="flex flex-col h-[500px] bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] overflow-hidden">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
+      <div className="px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
         <div className="flex items-center gap-2">
           <span className="text-lg">💬</span>
-          <h3 className="font-semibold text-slate-900 dark:text-white">Chat with Repository</h3>
+          <h3 className="font-semibold text-[var(--text-primary)]">Chat with Repository</h3>
         </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+        <p className="text-xs text-[var(--text-secondary)] mt-1">
           Ask about code syntax, implementation details, how functions work, and more
         </p>
       </div>
@@ -155,17 +155,17 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center">
             <div className="text-4xl mb-3">🤖</div>
-            <p className="text-slate-600 dark:text-slate-400 mb-4">
+            <p className="text-[var(--text-secondary)] mb-4">
               Ask me anything about this repository!
             </p>
             <div className="space-y-2">
-              <p className="text-xs text-slate-500 dark:text-slate-500">Try asking:</p>
+              <p className="text-xs text-[var(--text-muted)]">Try asking:</p>
               <div className="flex flex-wrap justify-center gap-2">
                 {suggestedQuestions.map((q, idx) => (
                   <button
                     key={idx}
                     onClick={() => setInput(q)}
-                    className="px-3 py-1.5 text-xs bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-full hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                    className="px-3 py-1.5 text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-full hover:bg-primary-100 dark:hover:bg-primary-900/30 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
                   >
                     {q}
                   </button>
@@ -182,8 +182,8 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
               <div
                 className={`max-w-[80%] px-4 py-2 rounded-2xl ${
                   msg.role === 'user'
-                    ? 'bg-blue-600 text-white rounded-br-md'
-                    : 'bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white rounded-bl-md'
+                    ? 'bg-primary-600 text-white rounded-br-md'
+                    : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-bl-md'
                 }`}
               >
                 <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
@@ -194,20 +194,20 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
 
         {isLoading && (
           <div className="flex justify-start">
-            <div className="bg-slate-100 dark:bg-slate-700 px-4 py-3 rounded-2xl rounded-bl-md">
+            <div className="bg-[var(--bg-tertiary)] px-4 py-3 rounded-2xl rounded-bl-md">
               <div className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                <div className="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                <div className="w-2 h-2 bg-primary-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
               </div>
             </div>
           </div>
         )}
 
         {error && (
-          <div className={`rounded-lg p-3 ${
+          <div className={`rounded-xl p-3 ${
             error.type === 'rate_limit'
-              ? 'bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800'
+              ? 'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800'
               : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
           }`}>
             <div className="flex items-start gap-2">
@@ -217,20 +217,20 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
               <div className="flex-1">
                 <p className={`text-sm font-medium ${
                   error.type === 'rate_limit'
-                    ? 'text-yellow-800 dark:text-yellow-200'
+                    ? 'text-amber-800 dark:text-amber-200'
                     : 'text-red-700 dark:text-red-300'
                 }`}>
                   {error.message}
                 </p>
                 {retryCountdown > 0 && (
-                  <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
                     You can try again in {retryCountdown} seconds
                   </p>
                 )}
                 {error.canRetry && retryCountdown === 0 && (
                   <button
                     onClick={() => setError(null)}
-                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1"
+                    className="text-xs text-primary-600 dark:text-primary-400 hover:underline mt-1"
                   >
                     Dismiss
                   </button>
@@ -244,7 +244,7 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="p-4 border-t border-slate-200 dark:border-slate-700">
+      <form onSubmit={handleSubmit} className="p-4 border-t border-[var(--border-color)]">
         <div className="flex gap-2">
           <input
             ref={inputRef}
@@ -253,17 +253,17 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
             onChange={(e) => setInput(e.target.value)}
             placeholder={retryCountdown > 0 ? `Wait ${retryCountdown}s...` : "Ask about the repository..."}
             disabled={isLoading || retryCountdown > 0}
-            className="flex-1 px-4 py-2 bg-slate-100 dark:bg-slate-700 border-0 rounded-full
-                     text-slate-900 dark:text-white placeholder-slate-400
-                     focus:ring-2 focus:ring-blue-500 focus:outline-none
-                     disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 px-4 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-full
+                     text-[var(--text-primary)] placeholder-[var(--text-muted)]
+                     focus:ring-2 focus:ring-primary-500 focus:border-primary-500 focus:outline-none
+                     disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
           />
           <button
             type="submit"
             disabled={isLoading || !input.trim() || retryCountdown > 0}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-full
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-full
                      disabled:opacity-50 disabled:cursor-not-allowed
-                     transition-colors flex items-center gap-2"
+                     transition-colors flex items-center gap-2 shadow-lg shadow-primary-500/25"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />

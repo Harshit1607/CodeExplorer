@@ -32,7 +32,7 @@ export default function FileStatsChart({ languages }: FileStatsChartProps) {
           <p className="text-sm text-blue-600 dark:text-blue-400">
             Files: {data.files.toLocaleString()}
           </p>
-          <p className="text-sm text-purple-600 dark:text-purple-400">
+          <p className="text-sm text-sky-600 dark:text-sky-400">
             Lines: {data.lines.toLocaleString()}
           </p>
         </div>

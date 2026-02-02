@@ -100,13 +100,13 @@ export default function KeyFilesSection({ keyFiles, entryPoints }: KeyFilesSecti
                     key={index}
                     className={`flex items-start gap-3 p-3 rounded-lg border transition-all hover:shadow-md ${
                       isEntryPoint
-                        ? 'bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 border-purple-200 dark:border-purple-800'
+                        ? 'bg-gradient-to-r from-sky-50 to-indigo-50 dark:from-sky-900/20 dark:to-indigo-900/20 border-sky-200 dark:border-sky-800'
                         : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600'
                     }`}
                   >
                     <div className={`w-8 h-8 rounded flex items-center justify-center flex-shrink-0 ${
                       isEntryPoint
-                        ? 'bg-purple-500 text-white'
+                        ? 'bg-sky-500 text-white'
                         : 'bg-slate-100 dark:bg-slate-700'
                     }`}>
                       {getFileIcon()}
@@ -121,7 +121,7 @@ export default function KeyFilesSection({ keyFiles, entryPoints }: KeyFilesSecti
                         </p>
                       )}
                       {isEntryPoint && (
-                        <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded">
+                        <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-medium bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
                           ENTRY POINT
                         </span>
                       )}

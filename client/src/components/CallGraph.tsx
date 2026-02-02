@@ -129,7 +129,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   const getNodeColor = useCallback((node: GraphNode, allFiles: string[]) => {
     if (node.isSelected) return '#3b82f6'; // blue for selected
     if (node.isCallee) return '#22c55e';   // green for callees (functions we call)
-    if (node.isCaller) return '#a855f7';   // purple for callers (functions that call us)
+    if (node.isCaller) return '#0ea5e9';   // sky blue for callers (functions that call us)
 
     // Color by directory
     const dir = node.file.split('/').slice(0, -1).join('/') || '/';
@@ -462,12 +462,12 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   // Empty state
   if (!callGraph || Object.keys(callGraph).length === 0) {
     return (
-      <div className="text-center py-12 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+      <div className="text-center py-12 bg-[var(--bg-tertiary)] rounded-xl border border-[var(--border-color)]">
         <div className="text-6xl mb-4">🔀</div>
-        <p className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">
+        <p className="text-lg font-medium text-[var(--text-primary)] mb-2">
           No call graph data available
         </p>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
+        <p className="text-sm text-[var(--text-secondary)]">
           Analyze a repository with functions to see call relationships
         </p>
       </div>
@@ -479,10 +479,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       {/* Header */}
       <div className="flex justify-between items-start flex-wrap gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+          <h3 className="text-lg font-semibold text-[var(--text-primary)]">
             🔀 Call Graph
           </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400">
+          <p className="text-sm text-[var(--text-secondary)]">
             Function-to-function call relationships across the codebase
           </p>
         </div>
@@ -492,7 +492,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
           <select
             value={displayMode}
             onChange={(e) => setDisplayMode(e.target.value as 'graph' | 'list')}
-            className="px-3 py-1.5 text-sm bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg"
+            className="px-3 py-1.5 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:ring-2 focus:ring-primary-500"
           >
             <option value="graph">Graph View</option>
             <option value="list">List View</option>
@@ -503,7 +503,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
               <select
                 value={graphMode}
                 onChange={(e) => setGraphMode(e.target.value as 'all' | 'selected')}
-                className="px-3 py-1.5 text-sm bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg"
+                className="px-3 py-1.5 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:ring-2 focus:ring-primary-500"
               >
                 <option value="all">All Connected</option>
                 <option value="selected">Selected Function</option>
@@ -513,7 +513,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                 <select
                   value={graphDepth}
                   onChange={(e) => setGraphDepth(Number(e.target.value))}
-                  className="px-3 py-1.5 text-sm bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg"
+                  className="px-3 py-1.5 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:ring-2 focus:ring-primary-500"
                 >
                   <option value={1}>Depth: 1</option>
                   <option value={2}>Depth: 2</option>
@@ -526,7 +526,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
               {selectedFunction && (
                 <button
                   onClick={handleClearSelection}
-                  className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors flex items-center gap-1"
+                  className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 rounded-xl hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors flex items-center gap-1"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -541,21 +541,21 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-3 border border-slate-200 dark:border-slate-600">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Total Functions</span>
-          <p className="text-lg font-bold text-slate-900 dark:text-white">{stats.totalFunctions}</p>
+        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
+          <span className="text-xs text-[var(--text-secondary)]">Total Functions</span>
+          <p className="text-lg font-bold text-[var(--text-primary)]">{stats.totalFunctions}</p>
         </div>
-        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-3 border border-slate-200 dark:border-slate-600">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Connected</span>
-          <p className="text-lg font-bold text-slate-900 dark:text-white">{stats.connectedFunctions}</p>
+        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
+          <span className="text-xs text-[var(--text-secondary)]">Connected</span>
+          <p className="text-lg font-bold text-[var(--text-primary)]">{stats.connectedFunctions}</p>
         </div>
-        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-3 border border-slate-200 dark:border-slate-600">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Total Calls</span>
-          <p className="text-lg font-bold text-slate-900 dark:text-white">{stats.totalCalls}</p>
+        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
+          <span className="text-xs text-[var(--text-secondary)]">Total Calls</span>
+          <p className="text-lg font-bold text-[var(--text-primary)]">{stats.totalCalls}</p>
         </div>
-        <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-3 border border-slate-200 dark:border-slate-600">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Most Called</span>
-          <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{stats.mostCalled}</p>
+        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
+          <span className="text-xs text-[var(--text-secondary)]">Most Called</span>
+          <p className="text-sm font-bold text-[var(--text-primary)] truncate">{stats.mostCalled}</p>
         </div>
       </div>
 
@@ -563,29 +563,29 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       <div className="flex gap-4">
         {/* Sidebar - Function list */}
         <div className="w-72 flex-shrink-0">
-          <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-3">
+          <div className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] p-3">
             <input
               type="text"
               placeholder="Search functions..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg mb-3"
+              className="w-full px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl mb-3 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:ring-2 focus:ring-primary-500"
             />
 
             <div className="flex items-center justify-between gap-2 mb-3">
-              <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
                 <input
                   type="checkbox"
                   checked={groupByFile}
                   onChange={(e) => setGroupByFile(e.target.checked)}
-                  className="rounded"
+                  className="rounded accent-primary-500"
                 />
                 Group by file
               </label>
               {selectedFunction && (
                 <button
                   onClick={handleClearSelection}
-                  className="text-xs px-2 py-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                  className="text-xs px-2 py-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                 >
                   Clear
                 </button>
@@ -598,7 +598,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                   .filter(([file]) => filteredFunctions.some(f => callGraph[f]?.file === file))
                   .map(([file, funcs]) => (
                     <div key={file} className="mb-2">
-                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400 px-2 py-1 truncate">
+                      <div className="text-xs font-medium text-[var(--text-secondary)] px-2 py-1 truncate">
                         {getFileIcon(file)} {getFileName(file)}
                       </div>
                       {funcs
@@ -611,14 +611,14 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                             <button
                               key={funcId}
                               onClick={() => handleFunctionSelect(funcId)}
-                              className={`w-full text-left px-3 py-1.5 text-sm rounded transition-colors ${
+                              className={`w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
                                 isSelected
-                                  ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200'
-                                  : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
+                                  ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200'
+                                  : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
                               }`}
                             >
                               <span className="truncate block">{info.name}</span>
-                              <span className="text-xs text-slate-400">
+                              <span className="text-xs text-[var(--text-muted)]">
                                 {(info.calls || []).length}↗ {(info.called_by || []).length}↙
                               </span>
                             </button>
@@ -637,14 +637,14 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                       <button
                         key={funcId}
                         onClick={() => handleFunctionSelect(funcId)}
-                        className={`w-full text-left px-3 py-1.5 text-sm rounded transition-colors ${
+                        className={`w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
                           isSelected
-                            ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200'
-                            : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
+                            ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200'
+                            : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
                         }`}
                       >
                         <span className="truncate block">{info.name}</span>
-                        <span className="text-xs text-slate-400 block truncate">
+                        <span className="text-xs text-[var(--text-muted)] block truncate">
                           {getFileName(info.file || '')}
                         </span>
                       </button>
@@ -658,21 +658,21 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         {/* Main view */}
         <div className="flex-1">
           {displayMode === 'graph' ? (
-            <div className="bg-slate-900 rounded-lg border border-slate-700 overflow-hidden">
+            <div className="bg-[#0F172A] rounded-xl border border-[var(--border-color)] overflow-hidden">
               <svg ref={svgRef} className="w-full" style={{ height: 600 }} />
 
               {/* Legend */}
-              <div className="px-4 py-2 bg-slate-800 border-t border-slate-700 flex gap-4 flex-wrap text-xs">
+              <div className="px-4 py-2 bg-[#1E293B] border-t border-[#334155] flex gap-4 flex-wrap text-xs text-slate-300">
                 <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-blue-500"></span>
+                  <span className="w-3 h-3 rounded-full bg-primary-500"></span>
                   Selected
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-green-500"></span>
+                  <span className="w-3 h-3 rounded-full bg-accent-green"></span>
                   Calls (outgoing)
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-purple-500"></span>
+                  <span className="w-3 h-3 rounded-full bg-accent-deepblue"></span>
                   Called by (incoming)
                 </span>
                 <span className="flex items-center gap-1">
@@ -682,21 +682,21 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
               </div>
             </div>
           ) : (
-            <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+            <div className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] p-4">
               {selectedFunction && selectedInfo ? (
                 <div className="space-y-4">
-                  <div className="pb-4 border-b border-slate-200 dark:border-slate-700">
-                    <h4 className="text-lg font-semibold text-slate-900 dark:text-white">
+                  <div className="pb-4 border-b border-[var(--border-color)]">
+                    <h4 className="text-lg font-semibold text-[var(--text-primary)]">
                       {selectedInfo.name}
                     </h4>
-                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                    <p className="text-sm text-[var(--text-secondary)]">
                       {getFileIcon(selectedInfo.file)} {selectedInfo.file}
                     </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <h5 className="text-sm font-medium text-green-600 dark:text-green-400 mb-2">
+                      <h5 className="text-sm font-medium text-accent-green mb-2">
                         Calls ({selectedInfo.calls.length})
                       </h5>
                       <div className="space-y-1 max-h-64 overflow-y-auto">
@@ -707,25 +707,25 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                               <button
                                 key={calleeId}
                                 onClick={() => handleFunctionSelect(calleeId)}
-                                className="w-full text-left px-3 py-2 text-sm bg-slate-50 dark:bg-slate-700/50 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
+                                className="w-full text-left px-3 py-2 text-sm bg-[var(--bg-tertiary)] rounded-lg hover:bg-[var(--border-color)] transition-colors"
                               >
-                                <span className="font-medium text-slate-900 dark:text-white">
+                                <span className="font-medium text-[var(--text-primary)]">
                                   {callee?.name || getFuncName(calleeId)}
                                 </span>
-                                <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">
+                                <span className="text-xs text-[var(--text-muted)] block truncate">
                                   {callee?.file || ''}
                                 </span>
                               </button>
                             );
                           })
                         ) : (
-                          <p className="text-sm text-slate-400">No outgoing calls</p>
+                          <p className="text-sm text-[var(--text-muted)]">No outgoing calls</p>
                         )}
                       </div>
                     </div>
 
                     <div>
-                      <h5 className="text-sm font-medium text-purple-600 dark:text-purple-400 mb-2">
+                      <h5 className="text-sm font-medium text-accent-deepblue mb-2">
                         Called By ({selectedInfo.called_by.length})
                       </h5>
                       <div className="space-y-1 max-h-64 overflow-y-auto">
@@ -736,26 +736,26 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                               <button
                                 key={callerId}
                                 onClick={() => handleFunctionSelect(callerId)}
-                                className="w-full text-left px-3 py-2 text-sm bg-slate-50 dark:bg-slate-700/50 rounded hover:bg-slate-100 dark:hover:bg-slate-700"
+                                className="w-full text-left px-3 py-2 text-sm bg-[var(--bg-tertiary)] rounded-lg hover:bg-[var(--border-color)] transition-colors"
                               >
-                                <span className="font-medium text-slate-900 dark:text-white">
+                                <span className="font-medium text-[var(--text-primary)]">
                                   {caller?.name || getFuncName(callerId)}
                                 </span>
-                                <span className="text-xs text-slate-500 dark:text-slate-400 block truncate">
+                                <span className="text-xs text-[var(--text-muted)] block truncate">
                                   {caller?.file || ''}
                                 </span>
                               </button>
                             );
                           })
                         ) : (
-                          <p className="text-sm text-slate-400">Not called by any function</p>
+                          <p className="text-sm text-[var(--text-muted)]">Not called by any function</p>
                         )}
                       </div>
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="text-center py-8 text-slate-500 dark:text-slate-400">
+                <div className="text-center py-8 text-[var(--text-secondary)]">
                   Select a function from the sidebar to see its call relationships
                 </div>
               )}

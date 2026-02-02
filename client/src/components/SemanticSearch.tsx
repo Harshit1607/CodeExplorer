@@ -75,7 +75,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
     switch (type) {
       case 'file': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
       case 'function': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300';
-      case 'class': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300';
+      case 'class': return 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300';
       case 'import': return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
       default: return 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300';
     }
@@ -285,7 +285,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
             <span className="px-3 py-1 text-xs bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded-full">
               "database" → models, queries, schemas
             </span>
-            <span className="px-3 py-1 text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded-full">
+            <span className="px-3 py-1 text-xs bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded-full">
               "error" → handlers, exceptions, catch
             </span>
             <span className="px-3 py-1 text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded-full">

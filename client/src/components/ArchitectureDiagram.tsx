@@ -67,9 +67,9 @@ const LAYER_COLORS: { [key: string]: { bg: string; border: string; text: string 
     text: 'text-cyan-800 dark:text-cyan-200',
   },
   services: {
-    bg: 'bg-purple-50 dark:bg-purple-900/30',
-    border: 'border-purple-300 dark:border-purple-700',
-    text: 'text-purple-800 dark:text-purple-200',
+    bg: 'bg-sky-50 dark:bg-sky-900/30',
+    border: 'border-sky-300 dark:border-sky-700',
+    text: 'text-sky-800 dark:text-sky-200',
   },
   data: {
     bg: 'bg-orange-50 dark:bg-orange-900/30',

@@ -173,12 +173,12 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
   // Get node color based on state
   const getNodeColor = (node: GraphNode) => {
-    if (node.type === 'external') return '#8b5cf6'; // purple for external
+    if (node.type === 'external') return '#0ea5e9'; // sky blue for external
     if (node.isSelected) return '#3b82f6'; // blue for selected
     if (node.hasCircular) return '#ef4444'; // red for circular
     if (node.isExpanded && !node.isSelected) return '#0ea5e9'; // cyan for expanded (but not selected)
     if (node.isDirectDep) return '#22c55e'; // green for direct dep
-    if (node.isDirectUsedBy) return '#a855f7'; // purple for used by
+    if (node.isDirectUsedBy) return '#38bdf8'; // sky blue for used by
     return '#64748b'; // gray for other
   };
 
@@ -565,8 +565,8 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
             <p className="text-lg font-bold text-green-600 dark:text-green-400">{stats.totalConnections}</p>
             <p className="text-[10px] text-slate-500">Links</p>
           </div>
-          <div className="text-center px-3 py-1 bg-purple-50 dark:bg-purple-900/30 rounded">
-            <p className="text-lg font-bold text-purple-600 dark:text-purple-400">{stats.externalPackages}</p>
+          <div className="text-center px-3 py-1 bg-sky-50 dark:bg-sky-900/30 rounded">
+            <p className="text-lg font-bold text-sky-600 dark:text-sky-400">{stats.externalPackages}</p>
             <p className="text-[10px] text-slate-500">Packages</p>
           </div>
           {stats.circularCount > 0 && (
@@ -864,14 +864,14 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
               {selectedDeps?.external && selectedDeps.external.length > 0 && (
                 <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
                   <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
-                    <span className="text-purple-500">📦</span>
+                    <span className="text-sky-500">📦</span>
                     External Packages ({selectedDeps.external.length})
                   </h5>
                   <div className="flex flex-wrap gap-2">
                     {selectedDeps.external.map((pkg, idx) => (
                       <span
                         key={idx}
-                        className="px-2 py-1 rounded text-xs font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-800 dark:text-purple-200"
+                        className="px-2 py-1 rounded text-xs font-medium bg-sky-100 dark:bg-sky-900/40 text-sky-800 dark:text-sky-200"
                       >
                         {pkg}
                       </span>
@@ -915,7 +915,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
               <span className="text-slate-600 dark:text-slate-400">Dependency</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
+              <div className="w-3 h-3 bg-sky-500 rounded-full"></div>
               <span className="text-slate-600 dark:text-slate-400">Importer</span>
             </div>
             <div className="flex items-center gap-2">

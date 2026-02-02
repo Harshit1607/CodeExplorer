@@ -23,7 +23,7 @@ export default function OverviewSection({
       label: 'Languages',
       value: Object.keys(structureAnalysis?.languages || {}).length,
       icon: '💻',
-      color: 'bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300',
+      color: 'bg-sky-100 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300',
     },
     {
       label: 'Entry Points',
@@ -81,7 +81,7 @@ export default function OverviewSection({
 
       {/* Frameworks Section */}
       {(frameworks.frontend?.length > 0 || frameworks.backend?.length > 0) && (
-        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 rounded-lg p-5 border border-indigo-200 dark:border-indigo-800">
+        <div className="bg-gradient-to-r from-indigo-50 to-sky-50 dark:from-indigo-900/20 dark:to-sky-900/20 rounded-lg p-5 border border-indigo-200 dark:border-indigo-800">
           <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
             <span>🛠️</span>
             Tech Stack
