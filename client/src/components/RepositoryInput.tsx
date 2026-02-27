@@ -97,12 +97,12 @@ export default function RepositoryInput({
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full bg-gradient-to-r from-primary-600 to-accent-deepblue hover:from-primary-700 hover:to-blue-800
-                   text-white font-medium py-3 px-6 rounded-xl
+          className="w-full bg-[var(--text-primary)] hover:bg-[var(--text-secondary)]
+                   text-[var(--bg-primary)] font-medium py-3 px-6 rounded-xl
                    disabled:opacity-50 disabled:cursor-not-allowed
                    transition-all duration-200 transform hover:scale-[1.02]
-                   focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
-                   shadow-lg shadow-primary-500/25"
+                   focus:outline-none focus:ring-2 focus:ring-[var(--text-primary)] focus:ring-offset-2
+                   shadow-lg"
         >
           {isLoading ? 'Analyzing...' : 'Analyze Repository'}
         </button>
