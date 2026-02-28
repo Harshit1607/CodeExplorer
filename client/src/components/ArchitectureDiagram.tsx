@@ -52,7 +52,7 @@ interface ArchitectureDiagramProps {
 // Layer colors mapping
 const LAYER_COLORS: { [key: string]: { bg: string; border: string; text: string } } = {
   frontend: {
-    bg: 'bg-blue-50 dark:bg-blue-900/30',
+    bg: 'bg-blue-50 dark:bg-blue-700/50',
     border: 'border-blue-300 dark:border-blue-700',
     text: 'text-blue-800 dark:text-blue-200',
   },
