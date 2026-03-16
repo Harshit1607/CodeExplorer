@@ -20,9 +20,27 @@ export default function QuickStartGuide({
   packageManager: detectedPM,
   runScripts,
 }: QuickStartGuideProps) {
-  // Determine primary language
-  const primaryLanguage = Object.entries(languages || {})
-    .sort(([, a], [, b]) => b.lines - a.lines)[0]?.[0] || 'Unknown';
+  // Categorize languages into frontend and backend
+  const FRONTEND_LANGUAGES = new Set([
+    'JavaScript', 'JavaScript (React)', 'TypeScript', 'TypeScript (React)',
+    'Vue', 'Svelte',
+  ]);
+  const BACKEND_LANGUAGES = new Set([
+    'Python', 'Java', 'Go', 'Rust', 'Ruby', 'PHP', 'C#',
+    'Kotlin', 'Scala', 'C', 'C++', 'Swift',
+  ]);
+
+  const sortedLanguages = Object.entries(languages || {})
+    .sort(([, a], [, b]) => b.lines - a.lines);
+
+  const primaryFrontendLang = sortedLanguages.find(([lang]) => FRONTEND_LANGUAGES.has(lang))?.[0];
+  const primaryBackendLang = sortedLanguages.find(([lang]) => BACKEND_LANGUAGES.has(lang))?.[0];
+  const primaryLanguage = sortedLanguages[0]?.[0] || 'Unknown';
+
+  // Show both frontend + backend languages for full-stack projects
+  const displayLanguage = (primaryFrontendLang && primaryBackendLang)
+    ? `${primaryFrontendLang.replace(' (React)', '')} + ${primaryBackendLang}`
+    : primaryLanguage;
 
   // Get frameworks
   const frontendFrameworks = frameworks?.frontend || [];
@@ -47,10 +65,24 @@ export default function QuickStartGuide({
   // Use detected package manager from analysis, or fall back to npm
   const packageManager = detectedPM || 'npm';
 
-  // Detect monorepo
+  // Detect if project has separate client/server structure (full-stack)
   const hasClientDir = keyFiles.some(f => f.startsWith('client/') || f.startsWith('frontend/'));
   const hasServerDir = keyFiles.some(f => f.startsWith('server/') || f.startsWith('backend/') || f.startsWith('api/'));
-  const isMonorepo = hasClientDir && hasServerDir;
+  const isFullStackStructure = hasClientDir && hasServerDir;
+
+  // Detect actual monorepo (workspaces-based, multiple independent packages)
+  // A monorepo uses workspaces to manage multiple independent packages, not just client/server splits
+  const jsDepKeys = Object.keys(dependencies?.javascript || {});
+  const hasWorkspaces = jsDepKeys.some(k => k.includes('workspaces'));
+  // Count distinct package.json locations (more than 2 suggests monorepo with multiple packages)
+  const packageLocations = jsDepKeys
+    .map(k => k.replace(/\/(dev)?[dD]ependencies$/, ''))
+    .filter((v, i, a) => a.indexOf(v) === i);
+  const hasMultiplePackages = packageLocations.length > 2;
+  const isMonorepo = hasWorkspaces || hasMultiplePackages;
+
+  // Determine project type
+  const isFullStack = isFullStackStructure || (frontendFrameworks.length > 0 && backendFrameworks.length > 0);
 
   // Detect documentation
   const hasReadme = keyFiles.some(f => f.toLowerCase().startsWith('readme'));
@@ -155,13 +187,13 @@ export default function QuickStartGuide({
         </h4>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
-            <p className="text-sm text-[var(--text-secondary)]">Language</p>
-            <p className="text-lg font-semibold text-[var(--text-primary)]">{primaryLanguage}</p>
+            <p className="text-sm text-[var(--text-secondary)]">{primaryFrontendLang && primaryBackendLang ? 'Languages' : 'Language'}</p>
+            <p className="text-lg font-semibold text-[var(--text-primary)]">{displayLanguage}</p>
           </div>
           <div>
             <p className="text-sm text-[var(--text-secondary)]">Type</p>
             <p className="text-lg font-semibold text-[var(--text-primary)]">
-              {isMonorepo ? 'Monorepo' : frontendFrameworks.length > 0 ? 'Frontend' : backendFrameworks.length > 0 ? 'Backend' : 'Project'}
+              {isMonorepo ? 'Monorepo' : isFullStack ? 'Full Stack' : frontendFrameworks.length > 0 ? 'Frontend' : backendFrameworks.length > 0 ? 'Backend' : 'Project'}
             </p>
           </div>
           {hasPkgJson && (
@@ -286,6 +318,21 @@ export default function QuickStartGuide({
             </div>
           )}
 
+          {/* Full-stack project note */}
+          {isFullStackStructure && !isMonorepo && (
+            <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl">
+              <div className="flex items-start gap-2">
+                <span>🔗</span>
+                <div>
+                  <span className="font-medium text-indigo-900 dark:text-indigo-200">Full-stack project</span>
+                  <p className="text-sm text-indigo-700 dark:text-indigo-300 mt-1">
+                    This project has separate client and server directories. You'll likely need to run install and start commands in each directory separately. Check the README for specific instructions.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Monorepo note */}
           {isMonorepo && (
             <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
@@ -294,7 +341,7 @@ export default function QuickStartGuide({
                 <div>
                   <span className="font-medium text-amber-900 dark:text-amber-200">Monorepo detected</span>
                   <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-                    This project has separate client and server directories. You'll likely need to run install and start commands in each directory separately. Check the README for specific instructions.
+                    This project uses a monorepo structure with multiple packages. Each package may have its own dependencies and scripts. Check the README or root package.json for workspace setup instructions.
                   </p>
                 </div>
               </div>
