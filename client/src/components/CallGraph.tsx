@@ -20,8 +20,10 @@ interface GraphNode {
   file: string;
   fileShort: string;
   isSelected: boolean;
+  isExpanded: boolean;
   isCaller: boolean;    // Calls the selected function
   isCallee: boolean;    // Called by the selected function
+  isConnected: boolean;
   callsCount: number;
   calledByCount: number;
   language: string;
@@ -114,6 +116,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   // Helper functions
   const getFileName = (path: string) => path.split('/').pop() || path;
   const getFuncName = (funcId: string) => funcId.split('::').pop() || funcId;
+  const getFilePath = (path: string) => {
+    const parts = path.split('/');
+    return parts.slice(0, -1).join('/') || '/';
+  };
 
   const getFileIcon = (file: string) => {
     const ext = file.split('.').pop()?.toLowerCase() || '';
@@ -122,24 +128,17 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     if (ext === 'py') return '🐍';
     if (ext === 'java') return '☕';
     if (ext === 'go') return '🔵';
+    if (ext === 'rs') return '🦀';
     return '📄';
   };
 
-  // Color nodes by file directory
-  const getNodeColor = useCallback((node: GraphNode, allFiles: string[]) => {
+  // Get node color based on state
+  const getNodeColor = useCallback((node: GraphNode) => {
     if (node.isSelected) return '#3b82f6'; // blue for selected
+    if (node.isExpanded && !node.isSelected) return '#0ea5e9'; // cyan for expanded
     if (node.isCallee) return '#22c55e';   // green for callees (functions we call)
-    if (node.isCaller) return '#0ea5e9';   // sky blue for callers (functions that call us)
-
-    // Color by directory
-    const dir = node.file.split('/').slice(0, -1).join('/') || '/';
-    const colors = [
-      '#64748b', '#ef4444', '#f59e0b', '#10b981', '#06b6d4',
-      '#8b5cf6', '#ec4899', '#f97316', '#84cc16', '#14b8a6'
-    ];
-    const uniqueDirs = [...new Set(allFiles.map(f => f.split('/').slice(0, -1).join('/') || '/'))].sort();
-    const dirIndex = uniqueDirs.indexOf(dir);
-    return colors[dirIndex % colors.length];
+    if (node.isCaller) return '#38bdf8';   // sky blue for callers (functions that call us)
+    return '#64748b'; // gray for other
   }, []);
 
   // Calculate statistics
@@ -161,7 +160,8 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       totalFunctions: funcs.length,
       connectedFunctions: connectedFuncs,
       totalCalls,
-      mostCalled: mostCalled.id ? `${getFuncName(mostCalled.id)} (${mostCalled.count})` : '-',
+      mostCalledName: mostCalled.id ? getFuncName(mostCalled.id) : '-',
+      mostCalledCount: mostCalled.count,
     };
   }, [callGraph]);
 
@@ -213,11 +213,11 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       // Show selected function and its connections up to depth
       const funcsToExpand = expandedFunctions.size > 0 ? expandedFunctions : new Set([selectedFunction!]);
       const addedLinks = new Set<string>();
-      const visited = new Set<string>(); // Prevent infinite recursion
+      const visited = new Set<string>();
 
       const collectConnections = (funcId: string, depth: number, direction: 'calls' | 'calledBy') => {
         if (depth > graphDepth) return;
-        if (visited.has(`${funcId}-${direction}-${depth}`)) return; // Prevent revisiting
+        if (visited.has(`${funcId}-${direction}-${depth}`)) return;
         visited.add(`${funcId}-${direction}-${depth}`);
 
         functionsToShow.add(funcId);
@@ -227,7 +227,6 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
         if (direction === 'calls') {
           (info.calls || []).forEach(callee => {
-            // Only add link if callee exists in callGraph
             if (!callGraph[callee]) return;
 
             const linkKey = `${funcId}->${callee}`;
@@ -241,7 +240,6 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
           });
         } else {
           (info.called_by || []).forEach(caller => {
-            // Only add link if caller exists in callGraph
             if (!callGraph[caller]) return;
 
             const linkKey = `${caller}->${funcId}`;
@@ -272,9 +270,6 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
     if (validFunctions.length === 0) return;
 
-    // Get all files for color assignment
-    const allFiles = [...new Set(validFunctions.map(f => callGraph[f]?.file || ''))];
-
     // Create a set of valid function IDs for quick lookup
     const validFunctionSet = new Set(validFunctions);
 
@@ -285,10 +280,12 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
       const calls = info.calls || [];
       const calledBy = info.called_by || [];
-      const selectedInfo = selectedFunction ? callGraph[selectedFunction] : null;
+      const selectedInfoLocal = selectedFunction ? callGraph[selectedFunction] : null;
 
-      const isCallee = selectedInfo ? (selectedInfo.calls || []).includes(funcId) : false;
-      const isCaller = selectedInfo ? (selectedInfo.called_by || []).includes(funcId) : false;
+      const isCallee = selectedInfoLocal ? (selectedInfoLocal.calls || []).includes(funcId) : false;
+      const isCaller = selectedInfoLocal ? (selectedInfoLocal.called_by || []).includes(funcId) : false;
+      const isConnected = connectedToSelected.has(funcId);
+      const isExpanded = expandedFunctions.has(funcId);
 
       return {
         id: funcId,
@@ -296,8 +293,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         file: info.file || '',
         fileShort: getFileName(info.file || ''),
         isSelected: funcId === selectedFunction,
+        isExpanded,
         isCaller,
         isCallee,
+        isConnected,
         callsCount: calls.length,
         calledByCount: calledBy.length,
         language: info.language || 'Unknown',
@@ -309,15 +308,21 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       .filter(l => validFunctionSet.has(l.source) && validFunctionSet.has(l.target))
       .map(l => ({ source: l.source, target: l.target }));
 
-    // Setup SVG
-    const svg = d3.select(svgRef.current);
-    const width = svgRef.current.clientWidth || 800;
-    const height = 600;
+    // Create node map for lookups
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
 
-    svg.attr('viewBox', `0 0 ${width} ${height}`);
+    // Set up SVG dimensions
+    const width = 900;
+    const height = 550;
+    const svg = d3.select(svgRef.current)
+      .attr('width', '100%')
+      .attr('height', '100%')
+      .attr('viewBox', `0 0 ${width} ${height}`);
+
+    // Create container for zoom
+    const container = svg.append('g');
 
     // Add zoom behavior
-    const container = svg.append('g');
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 4])
       .on('zoom', (event) => {
@@ -325,79 +330,139 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       });
     svg.call(zoom);
 
-    // Arrow marker
+    // Create arrow markers
     svg.append('defs').append('marker')
-      .attr('id', 'callgraph-arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 20)
+      .attr('id', 'arrowhead-call')
+      .attr('viewBox', '-0 -5 10 10')
+      .attr('refX', 25)
       .attr('refY', 0)
+      .attr('orient', 'auto')
       .attr('markerWidth', 6)
       .attr('markerHeight', 6)
+      .append('svg:path')
+      .attr('d', 'M 0,-5 L 10 ,0 L 0,5')
+      .attr('fill', '#64748b');
+
+    // Create selected arrow marker
+    svg.select('defs').append('marker')
+      .attr('id', 'arrowhead-call-selected')
+      .attr('viewBox', '-0 -5 10 10')
+      .attr('refX', 25)
+      .attr('refY', 0)
       .attr('orient', 'auto')
-      .append('path')
-      .attr('fill', '#94a3b8')
-      .attr('d', 'M0,-5L10,0L0,5');
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .append('svg:path')
+      .attr('d', 'M 0,-5 L 10 ,0 L 0,5')
+      .attr('fill', '#3b82f6');
+
+    // Create outgoing call arrow marker
+    svg.select('defs').append('marker')
+      .attr('id', 'arrowhead-call-outgoing')
+      .attr('viewBox', '-0 -5 10 10')
+      .attr('refX', 25)
+      .attr('refY', 0)
+      .attr('orient', 'auto')
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .append('svg:path')
+      .attr('d', 'M 0,-5 L 10 ,0 L 0,5')
+      .attr('fill', '#22c55e');
+
+    // Create incoming call arrow marker
+    svg.select('defs').append('marker')
+      .attr('id', 'arrowhead-call-incoming')
+      .attr('viewBox', '-0 -5 10 10')
+      .attr('refX', 25)
+      .attr('refY', 0)
+      .attr('orient', 'auto')
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .append('svg:path')
+      .attr('d', 'M 0,-5 L 10 ,0 L 0,5')
+      .attr('fill', '#a855f7');
 
     // Create simulation
     const simulation = d3.forceSimulation(nodes as any)
       .force('link', d3.forceLink(links)
         .id((d: any) => d.id)
-        .distance(100))
-      .force('charge', d3.forceManyBody().strength(-300))
+        .distance(120))
+      .force('charge', d3.forceManyBody().strength(-400))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(35));
+      .force('collision', d3.forceCollide().radius(40));
 
     // Draw links
     const link = container.append('g')
       .selectAll('line')
       .data(links)
-      .join('line')
+      .enter()
+      .append('line')
       .attr('stroke', (d: any) => {
+        const sourceNode = typeof d.source === 'object' ? d.source : nodeMap.get(d.source);
+        const targetNode = typeof d.target === 'object' ? d.target : nodeMap.get(d.target);
         if (selectedFunction) {
-          const sourceId = typeof d.source === 'string' ? d.source : d.source.id;
-          const targetId = typeof d.target === 'string' ? d.target : d.target.id;
-          if (sourceId === selectedFunction) return '#22c55e'; // calls
-          if (targetId === selectedFunction) return '#a855f7'; // called by
+          const sourceId = sourceNode?.id || d.source;
+          const targetId = targetNode?.id || d.target;
+          if (sourceId === selectedFunction) return '#22c55e'; // calls (outgoing)
+          if (targetId === selectedFunction) return '#a855f7'; // called by (incoming)
         }
-        return '#94a3b8';
+        if (sourceNode?.isSelected || targetNode?.isSelected) return '#3b82f6';
+        if (selectedFunction && (sourceNode?.isConnected && targetNode?.isConnected)) return '#94a3b8';
+        return '#64748b';
       })
-      .attr('stroke-width', 2)
       .attr('stroke-opacity', (d: any) => {
+        const sourceNode = typeof d.source === 'object' ? d.source : nodeMap.get(d.source);
+        const targetNode = typeof d.target === 'object' ? d.target : nodeMap.get(d.target);
         if (graphMode === 'all' && selectedFunction) {
-          const sourceId = typeof d.source === 'string' ? d.source : d.source.id;
-          const targetId = typeof d.target === 'string' ? d.target : d.target.id;
-          if (!connectedToSelected.has(sourceId) && !connectedToSelected.has(targetId)) {
-            return 0.2;
-          }
+          if (sourceNode?.isSelected || targetNode?.isSelected) return 0.9;
+          if (sourceNode?.isConnected && targetNode?.isConnected) return 0.6;
+          return 0.15;
         }
-        return 0.8;
+        return 0.6;
       })
-      .attr('marker-end', 'url(#callgraph-arrow)');
+      .attr('stroke-width', (d: any) => {
+        const sourceNode = typeof d.source === 'object' ? d.source : nodeMap.get(d.source);
+        const targetNode = typeof d.target === 'object' ? d.target : nodeMap.get(d.target);
+        if (sourceNode?.isSelected || targetNode?.isSelected) return 2.5;
+        return 1.5;
+      })
+      .attr('marker-end', (d: any) => {
+        if (selectedFunction) {
+          const sourceNode = typeof d.source === 'object' ? d.source : nodeMap.get(d.source);
+          const targetNode = typeof d.target === 'object' ? d.target : nodeMap.get(d.target);
+          const sourceId = sourceNode?.id || d.source;
+          const targetId = targetNode?.id || d.target;
+          if (sourceId === selectedFunction) return 'url(#arrowhead-call-outgoing)';
+          if (targetId === selectedFunction) return 'url(#arrowhead-call-incoming)';
+          if (sourceNode?.isSelected || targetNode?.isSelected) return 'url(#arrowhead-call-selected)';
+        }
+        return 'url(#arrowhead-call)';
+      });
 
     // Draw nodes
     let isDragging = false;
     const node = container.append('g')
       .selectAll('g')
       .data(nodes)
-      .join('g')
-      .attr('cursor', 'pointer')
-      .call(d3.drag<SVGGElement, GraphNode>()
-        .on('start', (event, d: any) => {
+      .enter()
+      .append('g')
+      .style('cursor', 'pointer')
+      .call(d3.drag<any, any>()
+        .on('start', (event) => {
           isDragging = false;
           if (!event.active) simulation.alphaTarget(0.3).restart();
-          d.fx = d.x;
-          d.fy = d.y;
+          event.subject.fx = event.subject.x;
+          event.subject.fy = event.subject.y;
         })
-        .on('drag', (event, d: any) => {
+        .on('drag', (event) => {
           isDragging = true;
-          d.fx = event.x;
-          d.fy = event.y;
+          event.subject.fx = event.x;
+          event.subject.fy = event.y;
         })
-        .on('end', (event, d: any) => {
+        .on('end', (event) => {
           if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
-          setTimeout(() => { isDragging = false; }, 100);
+          event.subject.fx = null;
+          event.subject.fy = null;
         }) as any)
       .on('click', (_, d) => {
         if (!isDragging) {
@@ -407,28 +472,25 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
     // Node circles
     node.append('circle')
-      .attr('r', (d: GraphNode) => d.isSelected ? 12 : 8)
-      .attr('fill', (d: GraphNode) => getNodeColor(d, allFiles))
-      .attr('stroke', (d: GraphNode) => d.isSelected ? '#1d4ed8' : 'white')
-      .attr('stroke-width', (d: GraphNode) => d.isSelected ? 3 : 2)
+      .attr('r', (d: GraphNode) => d.isSelected ? 14 : (d.isExpanded ? 13 : 12))
+      .attr('fill', (d: GraphNode) => getNodeColor(d))
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2)
       .attr('opacity', (d: GraphNode) => {
-        if (graphMode === 'all' && selectedFunction && !connectedToSelected.has(d.id)) {
-          return 0.3;
-        }
+        if (graphMode === 'all' && selectedFunction && !d.isConnected) return 0.3;
         return 1;
       });
 
     // Node labels
     node.append('text')
-      .text((d: GraphNode) => d.label)
-      .attr('x', 12)
+      .text((d: GraphNode) => d.label.substring(0, 20))
+      .attr('x', 18)
       .attr('y', 4)
-      .attr('font-size', '11px')
-      .attr('fill', '#e2e8f0')
+      .attr('font-size', 11)
+      .attr('fill', '#334155')
+      .attr('class', 'dark:fill-slate-300')
       .attr('opacity', (d: GraphNode) => {
-        if (graphMode === 'all' && selectedFunction && !connectedToSelected.has(d.id)) {
-          return 0.3;
-        }
+        if (graphMode === 'all' && selectedFunction && !d.isConnected) return 0.3;
         return 1;
       });
 
@@ -452,7 +514,6 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     };
     } catch (error) {
       console.error('Error rendering call graph:', error);
-      // Clear SVG on error to prevent broken state
       if (svgRef.current) {
         d3.select(svgRef.current).selectAll('*').remove();
       }
@@ -462,12 +523,12 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   // Empty state
   if (!callGraph || Object.keys(callGraph).length === 0) {
     return (
-      <div className="text-center py-12 bg-[var(--bg-tertiary)] rounded-xl border border-[var(--border-color)]">
+      <div className="text-center py-12 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="text-6xl mb-4">🔀</div>
-        <p className="text-lg font-medium text-[var(--text-primary)] mb-2">
+        <p className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">
           No call graph data available
         </p>
-        <p className="text-sm text-[var(--text-secondary)]">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Analyze a repository with functions to see call relationships
         </p>
       </div>
@@ -476,109 +537,139 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex justify-between items-start flex-wrap gap-4">
+      {/* Header with Stats */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
             🔀 Call Graph
           </h3>
-          <p className="text-sm text-[var(--text-secondary)]">
+          <p className="text-sm text-slate-600 dark:text-slate-400">
             Function-to-function call relationships across the codebase
           </p>
         </div>
 
-        {/* Controls */}
-        <div className="flex gap-2 flex-wrap">
-          <select
-            value={displayMode}
-            onChange={(e) => setDisplayMode(e.target.value as 'graph' | 'list')}
-            className="px-3 py-1.5 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:ring-2 focus:ring-primary-500"
+        {/* Quick Stats */}
+        <div className="flex gap-3">
+          <div className="text-center px-3 py-1 bg-blue-50 dark:bg-blue-900/30 rounded">
+            <p className="text-lg font-bold text-blue-600 dark:text-blue-400">{stats.totalFunctions}</p>
+            <p className="text-[10px] text-slate-500">Functions</p>
+          </div>
+          <div className="text-center px-3 py-1 bg-green-50 dark:bg-green-900/30 rounded">
+            <p className="text-lg font-bold text-green-600 dark:text-green-400">{stats.connectedFunctions}</p>
+            <p className="text-[10px] text-slate-500">Connected</p>
+          </div>
+          <div className="text-center px-3 py-1 bg-sky-50 dark:bg-sky-900/30 rounded">
+            <p className="text-lg font-bold text-sky-600 dark:text-sky-400">{stats.totalCalls}</p>
+            <p className="text-[10px] text-slate-500">Calls</p>
+          </div>
+          <div className="text-center px-3 py-1 bg-purple-50 dark:bg-purple-900/30 rounded">
+            <p className="text-sm font-bold text-purple-600 dark:text-purple-400 truncate max-w-[80px]">{stats.mostCalledName}</p>
+            <p className="text-[10px] text-slate-500">Most Called ({stats.mostCalledCount})</p>
+          </div>
+        </div>
+      </div>
+
+      {/* View Mode Toggle */}
+      <div className="flex flex-wrap gap-4 items-center">
+        <div className="flex gap-1 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
+          <button
+            onClick={() => setDisplayMode('graph')}
+            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+              displayMode === 'graph'
+                ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
+                : 'text-slate-600 dark:text-slate-400'
+            }`}
           >
-            <option value="graph">Graph View</option>
-            <option value="list">List View</option>
-          </select>
+            📊 Graph View
+          </button>
+          <button
+            onClick={() => setDisplayMode('list')}
+            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+              displayMode === 'list'
+                ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
+                : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            📋 List View
+          </button>
+        </div>
 
-          {displayMode === 'graph' && (
-            <>
-              <select
-                value={graphMode}
-                onChange={(e) => setGraphMode(e.target.value as 'all' | 'selected')}
-                className="px-3 py-1.5 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:ring-2 focus:ring-primary-500"
+        {displayMode === 'graph' && (
+          <>
+            {/* Graph Mode: All vs Selected */}
+            <div className="flex gap-1 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
+              <button
+                onClick={() => setGraphMode('all')}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  graphMode === 'all'
+                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
               >
-                <option value="all">All Connected</option>
-                <option value="selected">Selected Function</option>
-              </select>
+                🌐 All Functions
+              </button>
+              <button
+                onClick={() => setGraphMode('selected')}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                  graphMode === 'selected'
+                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                🎯 Selected Function
+              </button>
+            </div>
 
-              {graphMode === 'selected' && (
+            {graphMode === 'selected' && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600 dark:text-slate-400">Depth:</span>
                 <select
                   value={graphDepth}
                   onChange={(e) => setGraphDepth(Number(e.target.value))}
-                  className="px-3 py-1.5 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl text-[var(--text-primary)] focus:ring-2 focus:ring-primary-500"
+                  className="px-2 py-1 text-sm bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded"
                 >
-                  <option value={1}>Depth: 1</option>
-                  <option value={2}>Depth: 2</option>
-                  <option value={3}>Depth: 3</option>
-                  <option value={4}>Depth: 4</option>
-                  <option value={5}>Depth: 5</option>
+                  {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
-              )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
-              {selectedFunction && (
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* Function Selection Panel */}
+        <div className="lg:col-span-1">
+          <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 p-3">
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-2">
+              Select Function ({filteredFunctions.length})
+            </h4>
+
+            <div className="relative mb-2">
+              <input
+                type="text"
+                placeholder="Search functions..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full px-3 py-1.5 pl-8 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg"
+              />
+              <span className="absolute left-2.5 top-2 text-slate-400 text-sm">🔍</span>
+              {searchQuery && (
                 <button
-                  onClick={handleClearSelection}
-                  className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 rounded-xl hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors flex items-center gap-1"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-600 text-sm"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                  Clear Selection
+                  ✕
                 </button>
               )}
-            </>
-          )}
-        </div>
-      </div>
+            </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
-          <span className="text-xs text-[var(--text-secondary)]">Total Functions</span>
-          <p className="text-lg font-bold text-[var(--text-primary)]">{stats.totalFunctions}</p>
-        </div>
-        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
-          <span className="text-xs text-[var(--text-secondary)]">Connected</span>
-          <p className="text-lg font-bold text-[var(--text-primary)]">{stats.connectedFunctions}</p>
-        </div>
-        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
-          <span className="text-xs text-[var(--text-secondary)]">Total Calls</span>
-          <p className="text-lg font-bold text-[var(--text-primary)]">{stats.totalCalls}</p>
-        </div>
-        <div className="bg-[var(--bg-tertiary)] rounded-xl p-3 border border-[var(--border-color)]">
-          <span className="text-xs text-[var(--text-secondary)]">Most Called</span>
-          <p className="text-sm font-bold text-[var(--text-primary)] truncate">{stats.mostCalled}</p>
-        </div>
-      </div>
-
-      {/* Main content */}
-      <div className="flex gap-4">
-        {/* Sidebar - Function list */}
-        <div className="w-72 flex-shrink-0">
-          <div className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] p-3">
-            <input
-              type="text"
-              placeholder="Search functions..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl mb-3 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:ring-2 focus:ring-primary-500"
-            />
-
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
                 <input
                   type="checkbox"
                   checked={groupByFile}
                   onChange={(e) => setGroupByFile(e.target.checked)}
-                  className="rounded accent-primary-500"
+                  className="rounded"
                 />
                 Group by file
               </label>
@@ -598,7 +689,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                   .filter(([file]) => filteredFunctions.some(f => callGraph[f]?.file === file))
                   .map(([file, funcs]) => (
                     <div key={file} className="mb-2">
-                      <div className="text-xs font-medium text-[var(--text-secondary)] px-2 py-1 truncate">
+                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400 px-2 py-1 truncate">
                         {getFileIcon(file)} {getFileName(file)}
                       </div>
                       {funcs
@@ -607,20 +698,41 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                           const info = callGraph[funcId];
                           if (!info) return null;
                           const isSelected = funcId === selectedFunction;
+                          const callsCount = (info.calls || []).length;
+                          const calledByCount = (info.called_by || []).length;
                           return (
                             <button
                               key={funcId}
                               onClick={() => handleFunctionSelect(funcId)}
-                              className={`w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                              className={`w-full text-left p-2 rounded transition-all ${
                                 isSelected
-                                  ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200'
-                                  : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                                  ? 'bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700'
+                                  : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-transparent'
                               }`}
                             >
-                              <span className="truncate block">{info.name}</span>
-                              <span className="text-xs text-[var(--text-muted)]">
-                                {(info.calls || []).length}↗ {(info.called_by || []).length}↙
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm">⚡</span>
+                                <span className="text-xs font-medium text-slate-900 dark:text-white truncate flex-1">
+                                  {info.name}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-0.5 ml-6">
+                                <span className="text-[10px] text-slate-500 truncate flex-1">
+                                  {getFilePath(info.file || '') || '/'}
+                                </span>
+                                <div className="flex gap-1">
+                                  {callsCount > 0 && (
+                                    <span className="text-[9px] px-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
+                                      ↗{callsCount}
+                                    </span>
+                                  )}
+                                  {calledByCount > 0 && (
+                                    <span className="text-[9px] px-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
+                                      ↙{calledByCount}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             </button>
                           );
                         })}
@@ -633,20 +745,41 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     const info = callGraph[funcId];
                     if (!info) return null;
                     const isSelected = funcId === selectedFunction;
+                    const callsCount = (info.calls || []).length;
+                    const calledByCount = (info.called_by || []).length;
                     return (
                       <button
                         key={funcId}
                         onClick={() => handleFunctionSelect(funcId)}
-                        className={`w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                        className={`w-full text-left p-2 rounded transition-all ${
                           isSelected
-                            ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-800 dark:text-primary-200'
-                            : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                            ? 'bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700'
+                            : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-transparent'
                         }`}
                       >
-                        <span className="truncate block">{info.name}</span>
-                        <span className="text-xs text-[var(--text-muted)] block truncate">
-                          {getFileName(info.file || '')}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm">⚡</span>
+                          <span className="text-xs font-medium text-slate-900 dark:text-white truncate flex-1">
+                            {info.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 ml-6">
+                          <span className="text-[10px] text-slate-500 truncate flex-1">
+                            {getFileName(info.file || '')}
+                          </span>
+                          <div className="flex gap-1">
+                            {callsCount > 0 && (
+                              <span className="text-[9px] px-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
+                                ↗{callsCount}
+                              </span>
+                            )}
+                            {calledByCount > 0 && (
+                              <span className="text-[9px] px-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
+                                ↙{calledByCount}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </button>
                     );
                   })
@@ -655,112 +788,210 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
           </div>
         </div>
 
-        {/* Main view */}
-        <div className="flex-1">
+        {/* Main Content Area */}
+        <div className="lg:col-span-3">
           {displayMode === 'graph' ? (
-            <div className="bg-[#0F172A] rounded-xl border border-[var(--border-color)] overflow-hidden">
-              <svg ref={svgRef} className="w-full" style={{ height: 600 }} />
-
-              {/* Legend */}
-              <div className="px-4 py-2 bg-[#1E293B] border-t border-[#334155] flex gap-4 flex-wrap text-xs text-slate-300">
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-primary-500"></span>
-                  Selected
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-accent-green"></span>
-                  Calls (outgoing)
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-accent-deepblue"></span>
-                  Called by (incoming)
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-3 h-3 rounded-full bg-slate-500"></span>
-                  Other
-                </span>
+            /* Graph View - D3 force-directed graph */
+            (graphMode === 'all' || selectedFunction) ? (
+              <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+                <div className="mb-4 flex items-start justify-between">
+                  <div>
+                    <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-2">
+                      {graphMode === 'all'
+                        ? (selectedFunction ? `Connections for ${selectedInfo?.name || getFuncName(selectedFunction)}` : 'All Function Calls')
+                        : expandedFunctions.size > 1
+                        ? `Exploring ${expandedFunctions.size} functions (selected: ${selectedInfo?.name || getFuncName(selectedFunction || '')})`
+                        : `Call graph for ${selectedInfo?.name || getFuncName(selectedFunction || '')}`}
+                    </h4>
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                      {graphMode === 'all' && selectedFunction
+                        ? 'Showing connected functions highlighted. Click another node or clear selection.'
+                        : graphMode === 'selected' && selectedFunction
+                        ? 'Click any node to expand and show its connections. Drag to reposition, scroll to zoom.'
+                        : 'Interactive visualization. Drag nodes to explore connections. Scroll to zoom.'}
+                    </p>
+                  </div>
+                  {selectedFunction && (
+                    <button
+                      onClick={handleClearSelection}
+                      className="px-3 py-1.5 text-xs font-medium bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 rounded-lg transition-colors"
+                    >
+                      ✕ Clear Selection
+                    </button>
+                  )}
+                </div>
+                <svg ref={svgRef} className="w-full h-[550px] bg-slate-50 dark:bg-slate-900 rounded-lg" />
               </div>
-            </div>
-          ) : (
-            <div className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] p-4">
-              {selectedFunction && selectedInfo ? (
-                <div className="space-y-4">
-                  <div className="pb-4 border-b border-[var(--border-color)]">
-                    <h4 className="text-lg font-semibold text-[var(--text-primary)]">
+            ) : (
+              <div className="flex items-center justify-center h-[550px] bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+                <div className="text-center">
+                  <div className="text-5xl mb-4">👈</div>
+                  <p className="text-lg text-slate-600 dark:text-slate-400">
+                    Select a function to view its call graph
+                  </p>
+                  <p className="text-sm text-slate-500 mt-2">
+                    Or switch to "All Functions" mode to see the complete graph
+                  </p>
+                </div>
+              </div>
+            )
+          ) : selectedFunction && selectedInfo ? (
+            /* List View */
+            <div className="space-y-4">
+              {/* Selected Function Header */}
+              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg p-4 border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">⚡</span>
+                  <div className="flex-1 min-w-0">
+                    <h4 className="text-lg font-semibold text-slate-900 dark:text-white">
                       {selectedInfo.name}
                     </h4>
-                    <p className="text-sm text-[var(--text-secondary)]">
+                    <p className="text-sm text-slate-600 dark:text-slate-400 font-mono truncate">
                       {getFileIcon(selectedInfo.file)} {selectedInfo.file}
                     </p>
                   </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <h5 className="text-sm font-medium text-accent-green mb-2">
-                        Calls ({selectedInfo.calls.length})
-                      </h5>
-                      <div className="space-y-1 max-h-64 overflow-y-auto">
-                        {selectedInfo.calls.length > 0 ? (
-                          selectedInfo.calls.map(calleeId => {
-                            const callee = callGraph[calleeId];
-                            return (
-                              <button
-                                key={calleeId}
-                                onClick={() => handleFunctionSelect(calleeId)}
-                                className="w-full text-left px-3 py-2 text-sm bg-[var(--bg-tertiary)] rounded-lg hover:bg-[var(--border-color)] transition-colors"
-                              >
-                                <span className="font-medium text-[var(--text-primary)]">
-                                  {callee?.name || getFuncName(calleeId)}
-                                </span>
-                                <span className="text-xs text-[var(--text-muted)] block truncate">
-                                  {callee?.file || ''}
-                                </span>
-                              </button>
-                            );
-                          })
-                        ) : (
-                          <p className="text-sm text-[var(--text-muted)]">No outgoing calls</p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <h5 className="text-sm font-medium text-accent-deepblue mb-2">
-                        Called By ({selectedInfo.called_by.length})
-                      </h5>
-                      <div className="space-y-1 max-h-64 overflow-y-auto">
-                        {selectedInfo.called_by.length > 0 ? (
-                          selectedInfo.called_by.map(callerId => {
-                            const caller = callGraph[callerId];
-                            return (
-                              <button
-                                key={callerId}
-                                onClick={() => handleFunctionSelect(callerId)}
-                                className="w-full text-left px-3 py-2 text-sm bg-[var(--bg-tertiary)] rounded-lg hover:bg-[var(--border-color)] transition-colors"
-                              >
-                                <span className="font-medium text-[var(--text-primary)]">
-                                  {caller?.name || getFuncName(callerId)}
-                                </span>
-                                <span className="text-xs text-[var(--text-muted)] block truncate">
-                                  {caller?.file || ''}
-                                </span>
-                              </button>
-                            );
-                          })
-                        ) : (
-                          <p className="text-sm text-[var(--text-muted)]">Not called by any function</p>
-                        )}
-                      </div>
-                    </div>
+                  <div className="flex gap-2">
+                    <span className="text-xs px-2 py-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
+                      ↗{selectedInfo.calls.length} calls
+                    </span>
+                    <span className="text-xs px-2 py-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
+                      ↙{selectedInfo.called_by.length} callers
+                    </span>
                   </div>
                 </div>
-              ) : (
-                <div className="text-center py-8 text-[var(--text-secondary)]">
-                  Select a function from the sidebar to see its call relationships
+              </div>
+
+              {/* Call Relationships */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+                  <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
+                    <span className="text-green-500">↗</span>
+                    Calls ({selectedInfo.calls.length})
+                  </h5>
+                  {selectedInfo.calls.length > 0 ? (
+                    <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                      {selectedInfo.calls.map(calleeId => {
+                        const callee = callGraph[calleeId];
+                        return (
+                          <button
+                            key={calleeId}
+                            onClick={() => handleFunctionSelect(calleeId)}
+                            className="w-full flex items-center gap-2 p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-left"
+                          >
+                            <span>{getFileIcon(callee?.file || '')}</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-medium text-slate-700 dark:text-slate-300 block truncate">
+                                {callee?.name || getFuncName(calleeId)}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block truncate">
+                                {callee?.file || ''}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500 italic">No outgoing calls</p>
+                  )}
                 </div>
-              )}
+
+                <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+                  <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
+                    <span className="text-sky-500">↙</span>
+                    Called By ({selectedInfo.called_by.length})
+                  </h5>
+                  {selectedInfo.called_by.length > 0 ? (
+                    <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                      {selectedInfo.called_by.map(callerId => {
+                        const caller = callGraph[callerId];
+                        return (
+                          <button
+                            key={callerId}
+                            onClick={() => handleFunctionSelect(callerId)}
+                            className="w-full flex items-center gap-2 p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-left"
+                          >
+                            <span>{getFileIcon(caller?.file || '')}</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-medium text-slate-700 dark:text-slate-300 block truncate">
+                                {caller?.name || getFuncName(callerId)}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block truncate">
+                                {caller?.file || ''}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500 italic">Not called by any function</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-[550px] bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+              <div className="text-center">
+                <div className="text-5xl mb-4">👈</div>
+                <p className="text-lg text-slate-600 dark:text-slate-400">
+                  Select a function to see its call relationships
+                </p>
+                <p className="text-sm text-slate-500 dark:text-slate-500 mt-2">
+                  Select a function from the list
+                </p>
+              </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3 border border-slate-200 dark:border-slate-700">
+        <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs">
+          {/* Node colors */}
+          <div className="flex items-center gap-4">
+            <span className="text-slate-500 dark:text-slate-400 font-medium">Nodes:</span>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+              <span className="text-slate-600 dark:text-slate-400">Selected</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-cyan-500 rounded-full"></div>
+              <span className="text-slate-600 dark:text-slate-400">Expanded</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+              <span className="text-slate-600 dark:text-slate-400">Calls (outgoing)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-sky-400 rounded-full"></div>
+              <span className="text-slate-600 dark:text-slate-400">Called by (incoming)</span>
+            </div>
+          </div>
+
+          {/* Arrow meanings */}
+          <div className="flex items-center gap-4">
+            <span className="text-slate-500 dark:text-slate-400 font-medium">Arrows:</span>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 dark:text-slate-400">A → B</span>
+              <span className="text-slate-500 dark:text-slate-500">=</span>
+              <span className="text-slate-600 dark:text-slate-400">A calls B</span>
+            </div>
+          </div>
+
+          {/* Counts */}
+          <div className="flex items-center gap-4">
+            <span className="text-slate-500 dark:text-slate-400 font-medium">Counts:</span>
+            <div className="flex items-center gap-2">
+              <span className="text-green-500 font-medium">↗N</span>
+              <span className="text-slate-600 dark:text-slate-400">calls N functions</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sky-500 font-medium">↙N</span>
+              <span className="text-slate-600 dark:text-slate-400">called by N functions</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
