@@ -68,6 +68,28 @@ class CodeAnalyzer:
         'api', 'routes', 'router',
     }
 
+    # API and Route Patterns for Cross-Boundary Call Graph
+    API_CALL_REGEX = re.compile(
+        r"(?:fetch|axios|api|http)\s*\(\s*['\"`]([^'\"`\?]+).*?['\"`](?:\s*,\s*\{.*?(?:method\s*:\s*['\"](\w+)['\"])?.*?\})?\s*\)|"
+        r"(?:axios|api|http)\.(get|post|put|delete|patch)\s*\(\s*['\"`]([^'\"`\?]+).*?['\"`]",
+        re.IGNORECASE
+    )
+
+    ROUTE_REGEXES = {
+        'Express.js': re.compile(r"(?:app|router|route)\.(get|post|put|delete|patch)\s*\(\s*['\"']([^'\"']+)['\"']", re.IGNORECASE),
+        'FastAPI': re.compile(r"@(app|router|api)\.(get|post|put|delete|patch)\s*\(\s*['\"']([^'\"']+)['\"']", re.IGNORECASE),
+        'Flask': re.compile(r"@app\.route\s*\(\s*['\"']([^'\"']+)['\"'](?:.*methods\s*=\s*\[(.*)\])?", re.IGNORECASE),
+        'Django': re.compile(r"path\s*\(\s*['\"']([^'\"']+)['\"']\s*,\s*([\w\.]+)", re.IGNORECASE),
+        'Spring Boot': re.compile(r"@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(\s*(?:value\s*=\s*)?['\"']([^'\"']+)['\"']", re.IGNORECASE),
+    }
+
+    DB_QUERY_REGEX = re.compile(
+        r"\.(find|findOne|findById|save|create|update|delete|remove|count|aggregate|select|insert|where|first|all)\s*\(|"
+        r"objects\.(all|filter|get|create|update|delete)\s*\(|"
+        r"(?:SELECT|INSERT|UPDATE|DELETE)\s+.*?\s+FROM\s+",
+        re.IGNORECASE
+    )
+
     def __init__(self, repo_path: str):
         self.repo_path = Path(repo_path)
         self.files: Dict[str, Dict] = {}
@@ -76,6 +98,10 @@ class CodeAnalyzer:
         self.all_python_deps: Set[str] = set()
         # Temporary storage for full file contents (used for call graph, cleared after)
         self._file_contents: Dict[str, str] = {}
+        # Cross-boundary traces
+        self.found_routes: List[Dict] = []
+        self.found_api_calls: List[Dict] = []
+        self.found_db_queries: List[Dict] = []
 
     def analyze(self) -> Dict[str, Any]:
         """Main analysis entry point."""
@@ -104,7 +130,7 @@ class CodeAnalyzer:
         file_dependencies = self._build_file_dependencies()
 
         # Build call graph (function-to-function relationships)
-        call_graph = self._build_call_graph(file_dependencies)
+        call_graph = self._build_call_graph(file_dependencies, frameworks, databases)
 
         # Clear temporary content storage to free memory
         self._file_contents.clear()
@@ -927,15 +953,17 @@ class CodeAnalyzer:
     # Call Graph Methods - Function-to-function call relationships
     # ============================================================
 
-    def _build_call_graph(self, file_dependencies: Dict[str, Dict]) -> Dict[str, Dict[str, Any]]:
+    def _build_call_graph(self, file_dependencies: Dict[str, Dict], frameworks: Dict, databases: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Build a call graph showing which functions call which other functions.
-        Returns a dict mapping qualified function IDs to their call relationships.
+        Also traces cross-boundary calls (Frontend -> API -> Backend -> DB).
         """
         call_graph: Dict[str, Dict[str, Any]] = {}
+        self.found_api_calls = []
+        self.found_routes = []
+        self.found_db_queries = []
 
         # Phase 1: Build registry of all known functions
-        # Maps function_name -> list of qualified_ids (handles name collisions)
         func_registry: Dict[str, List[str]] = {}
 
         for file_path, meta in self.files.items():
@@ -948,19 +976,22 @@ class CodeAnalyzer:
                     "calls": [],
                     "called_by": [],
                     "language": language,
+                    "type": "function"
                 }
                 if func_name not in func_registry:
                     func_registry[func_name] = []
                 func_registry[func_name].append(qualified_id)
 
-        # Phase 2: Extract call relationships for each file
+        # Phase 2: Extract backend routes
+        self._extract_all_routes(frameworks)
+
+        # Phase 3: Extract call relationships for each file
         for file_path, meta in self.files.items():
             content = self._file_contents.get(file_path, '')
             if not content:
                 continue
 
             ext = meta.get('extension', '')
-
             if ext == '.py':
                 self._extract_python_calls(file_path, content, call_graph, func_registry, file_dependencies)
             elif ext in {'.js', '.jsx', '.ts', '.tsx'}:
@@ -970,9 +1001,12 @@ class CodeAnalyzer:
             elif ext == '.go':
                 self._extract_go_calls(file_path, content, call_graph, func_registry, file_dependencies)
 
-        # Phase 3: Build reverse mapping (called_by)
+        # Phase 4: Cross-Boundary Matching & DB Tracing
+        self._link_cross_boundary(call_graph, func_registry, databases)
+
+        # Phase 5: Build reverse mapping (called_by)
         for qualified_id, info in call_graph.items():
-            for callee_id in info['calls']:
+            for callee_id in info.get('calls', []):
                 if callee_id in call_graph:
                     if qualified_id not in call_graph[callee_id]['called_by']:
                         call_graph[callee_id]['called_by'].append(qualified_id)
@@ -1011,6 +1045,14 @@ class CodeAnalyzer:
                                 if target_id != caller_id:  # Skip self-recursion noise
                                     if target_id not in call_graph[caller_id]['calls']:
                                         call_graph[caller_id]['calls'].append(target_id)
+                
+                # --- Cross-Boundary: DB queries (Python-specific) ---
+                for python_db_match in self.DB_QUERY_REGEX.finditer(ast.unparse(node) if hasattr(ast, "unparse") else ""):
+                    op = python_db_match.group(1) or python_db_match.group(2) or 'query'
+                    self.found_db_queries.append({
+                        'caller': caller_id,
+                        'op': op.lower()
+                    })
 
     def _extract_call_name(self, call_node: ast.Call) -> Optional[str]:
         """Extract the function name from an ast.Call node."""
@@ -1073,6 +1115,26 @@ class CodeAnalyzer:
                         if target_id != caller_id:
                             if target_id not in call_graph[caller_id]['calls']:
                                 call_graph[caller_id]['calls'].append(target_id)
+            
+            # --- Cross-Boundary: API calls and DB queries ---
+            # Detect fetch/axios calls
+            for api_match in self.API_CALL_REGEX.finditer(body):
+                path = api_match.group(1) or api_match.group(4)
+                method = api_match.group(2) or api_match.group(3) or 'get'
+                if path:
+                    self.found_api_calls.append({
+                        'caller': caller_id,
+                        'path': path,
+                        'method': method.lower()
+                    })
+            
+            # Detect DB queries (e.g., Mongoose, Prisma)
+            for db_match in self.DB_QUERY_REGEX.finditer(body):
+                op = db_match.group(1) or db_match.group(2) or 'query'
+                self.found_db_queries.append({
+                    'caller': caller_id,
+                    'op': op.lower()
+                })
 
     def _extract_java_calls(self, file_path: str, content: str,
                             call_graph: Dict, func_registry: Dict,
@@ -1221,3 +1283,179 @@ class CodeAnalyzer:
 
         # Fallback: return limited candidates to avoid explosion
         return candidates[:3]
+
+    # === Cross-Boundary Trace Helpers ===
+
+    def _extract_all_routes(self, frameworks: Dict):
+        """Discover all backend API routes in the codebase."""
+        backend_fws = frameworks.get('backend', [])
+        for file_path, content in self._file_contents.items():
+            for fw in backend_fws:
+                regex = self.ROUTE_REGEXES.get(fw)
+                if not regex:
+                    continue
+                
+                for match in regex.finditer(content):
+                    method = 'get'
+                    path = ''
+                    handler = ''
+                    middlewares = []
+                    
+                    if fw == 'Express.js':
+                        method = match.group(1).lower()
+                        path = match.group(2)
+                        # Capture multiple handlers (middlewares + controller)
+                        end_stmt = content.find(')', match.end())
+                        if end_stmt != -1:
+                            args_segment = content[match.end():end_stmt]
+                            found_handlers = re.findall(r'(\w+(?:\.\w+)*)', args_segment)
+                            if found_handlers:
+                                handler = found_handlers[-1]
+                                middlewares = found_handlers[:-1]
+                    elif fw == 'FastAPI':
+                        method = match.group(2).lower()
+                        path = match.group(3)
+                        handler = self._find_next_python_function(content, match.end())
+                    elif fw == 'Flask':
+                        path = match.group(1)
+                        method_match = match.group(2)
+                        method = 'get' if not method_match or 'GET' in method_match.upper() else 'post'
+                        handler = self._find_next_python_function(content, match.end())
+                    elif fw == 'Django':
+                        path = match.group(1)
+                        handler_full = match.group(2)
+                        handler = handler_full.split('.')[-1]
+                    elif fw == 'Spring Boot':
+                        annotation = match.group(1).lower()
+                        path = match.group(2)
+                        if 'get' in annotation: method = 'get'
+                        elif 'post' in annotation: method = 'post'
+                        elif 'put' in annotation: method = 'put'
+                        elif 'delete' in annotation: method = 'delete'
+                        handler_match = re.search(r'public\s+\w+\s+(\w+)\s*\(', content[match.end():])
+                        handler = handler_match.group(1) if handler_match else None
+                    
+                    if path and handler:
+                        self.found_routes.append({
+                            'file': file_path,
+                            'path': path,
+                            'method': method,
+                            'handler': handler,
+                            'middlewares': middlewares
+                        })
+
+    def _find_next_python_function(self, content: str, start_pos: int) -> Optional[str]:
+        """Find the next Python function definition after a position."""
+        match = re.search(r'def\s+(\w+)', content[start_pos:])
+        return match.group(1) if match else None
+
+    def _link_cross_boundary(self, call_graph: Dict, func_registry: Dict, databases: List[str]):
+        """Connect frontend API calls to backend routes (with middleware chain) and DB."""
+        # Match API calls to Routes
+        for api in self.found_api_calls:
+            # Create a virtual api-call node
+            api_node_id = f"api-call::{api['method'].upper()}::{api['path']}"
+            if api_node_id not in call_graph:
+                call_graph[api_node_id] = {
+                    "name": f"{api['method'].upper()} {api['path']}",
+                    "file": api.get('file', '(frontend)'),
+                    "calls": [],
+                    "called_by": [],
+                    "language": "API",
+                    "type": "api-call"
+                }
+            
+            # Connect caller to api-call
+            caller_id = api['caller']
+            if caller_id in call_graph:
+                if api_node_id not in call_graph[caller_id]['calls']:
+                    call_graph[caller_id]['calls'].append(api_node_id)
+            
+            # Match to backend route
+            matched_route = self._match_route(api['path'], api['method'])
+            if matched_route:
+                # Start tracking from the API node
+                prev_id = api_node_id
+                
+                # Link middlewares in sequence
+                for mw in matched_route.get('middlewares', []):
+                    mw_name = mw.split('.')[-1]
+                    mw_candidates = func_registry.get(mw_name, [])
+                    # Prefer middleware in the same file as the route
+                    mw_id = next((c for c in mw_candidates if c.startswith(f"{matched_route['file']}::")), None)
+                    if not mw_id and mw_candidates: mw_id = mw_candidates[0]
+                    
+                    if mw_id:
+                        if mw_id not in call_graph[prev_id]['calls']:
+                            call_graph[prev_id]['calls'].append(mw_id)
+                        call_graph[mw_id]['type'] = 'middleware'
+                        prev_id = mw_id
+                
+                # Final Handler
+                route_handler_id = f"{matched_route['file']}::{matched_route['handler']}"
+                if route_handler_id in call_graph:
+                    call_graph[route_handler_id]['type'] = 'route'
+                    if route_handler_id not in call_graph[prev_id]['calls']:
+                        call_graph[prev_id]['calls'].append(route_handler_id)
+                else:
+                    # Create a virtual route node if handler not in call graph
+                    virtual_route_id = f"route::{matched_route['method'].upper()}::{matched_route['path']}"
+                    if virtual_route_id not in call_graph:
+                        call_graph[virtual_route_id] = {
+                            "name": f"Handler: {matched_route['handler']}",
+                            "file": matched_route['file'],
+                            "calls": [],
+                            "called_by": [],
+                            "language": "Backend",
+                            "type": "route"
+                        }
+                    if virtual_route_id not in call_graph[prev_id]['calls']:
+                        call_graph[prev_id]['calls'].append(virtual_route_id)
+
+        # Tracing DB Queries
+        for db in self.found_db_queries:
+            db_node_id = f"db-query::{db['op'].upper()}"
+            if db_node_id not in call_graph:
+                call_graph[db_node_id] = {
+                    "name": f"DB {db['op'].upper()}",
+                    "file": "(database space)",
+                    "calls": [],
+                    "called_by": [],
+                    "language": "SQL",
+                    "type": "db-query"
+                }
+            
+            caller_id = db['caller']
+            if caller_id in call_graph:
+                if db_node_id not in call_graph[caller_id]['calls']:
+                    call_graph[caller_id]['calls'].append(db_node_id)
+                if call_graph[caller_id]['type'] == 'function':
+                    call_graph[caller_id]['type'] = 'service'
+
+    def _match_route(self, api_path: str, api_method: str) -> Optional[Dict]:
+        """Match an API path to a backend route definition."""
+        # Normalize: strip leading/trailing slashes and remove query params
+        api_path = api_path.strip('/').split('?')[0]
+        
+        for route in self.found_routes:
+            if route['method'].lower() != api_method.lower() and route['method'].lower() != 'any':
+                continue
+            
+            route_path = route['path'].strip('/')
+            
+            # Simple exact match
+            if api_path == route_path:
+                return route
+                
+            # Pattern matching for parameters: /users/:id or /users/{id}
+            # Convert to regex
+            pattern = re.sub(r'[:{][\w-]+}', r'[^/]+', route_path)
+            pattern = re.sub(r':[\w-]+', r'[^/]+', pattern) # express style
+            
+            try:
+                if re.fullmatch(pattern, api_path):
+                    return route
+            except:
+                continue
+
+        return None
