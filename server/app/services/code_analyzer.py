@@ -90,6 +90,16 @@ class CodeAnalyzer:
         re.IGNORECASE
     )
 
+    RESERVED_KEYWORDS = {
+        'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default',
+        'break', 'continue', 'return', 'try', 'catch', 'finally', 'throw',
+        'function', 'class', 'var', 'let', 'const', 'import', 'export',
+        'extends', 'implements', 'interface', 'package', 'public', 'private',
+        'protected', 'static', 'async', 'await', 'yield', 'new', 'this',
+        'super', 'typeof', 'instanceof', 'void', 'delete', 'in', 'of',
+        'boolean', 'number', 'string', 'any', 'void', 'null', 'undefined'
+    }
+
     def __init__(self, repo_path: str):
         self.repo_path = Path(repo_path)
         self.files: Dict[str, Dict] = {}
@@ -246,7 +256,7 @@ class CodeAnalyzer:
             return {"imports": [], "functions": [], "classes": [], "has_main": False}
 
     def _analyze_js(self, content: str) -> Dict:
-        """Analyze JavaScript/TypeScript file with comprehensive import detection."""
+        """Analyze JavaScript/TypeScript file with comprehensive detection."""
         imports = set()
 
         # Standard ES6 imports: import X from 'module'
@@ -267,11 +277,24 @@ class CodeAnalyzer:
         # Type imports (TypeScript): import type { X } from 'module'
         imports.update(re.findall(r"import\s+type\s+.*?\s+from\s+['\"]([^'\"]+)['\"]", content))
 
+        # Comprehensive function detection
+        functions = set()
+        # 1. function foo() {}
+        functions.update(re.findall(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(", content))
+        # 2. const foo = () => {}
+        functions.update(re.findall(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\))?\s*=>", content))
+        # 3. const foo = function() {}
+        functions.update(re.findall(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?function\s*[\w\s]*\(", content))
+        # 4. class methods: foo() {
+        functions.update(re.findall(r"^\s*(?:async\s+)?(?:static\s+)?(?:get\s+|set\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{", content, re.MULTILINE))
+        # 5. Object methods: foo: (args) => { or foo(args) { or foo: function() {
+        functions.update(re.findall(r"(\w+)\s*[:\(]\s*(?:async\s*)?(?:function\s*[\w\s]*|\([^)]*\))?\s*(?:=>)?\s*\{", content))
+
         return {
             "imports": list(imports),
-            "functions": re.findall(r"(?:function|const|let|var)\s+(\w+)\s*(?:=\s*(?:async\s*)?\(|=\s*function|\()", content),
+            "functions": [f for f in functions if f.lower() not in self.RESERVED_KEYWORDS],
             "classes": re.findall(r"class\s+(\w+)", content),
-            "has_main": "createRoot" in content or "ReactDOM.render" in content or "createApp" in content
+            "has_main": any(x in content for x in ["createRoot", "ReactDOM.render", "createApp", "render("])
         }
 
     def _analyze_java(self, content: str) -> Dict:
@@ -1051,6 +1074,7 @@ class CodeAnalyzer:
                     op = python_db_match.group(1) or python_db_match.group(2) or 'query'
                     self.found_db_queries.append({
                         'caller': caller_id,
+                        'file': file_path,
                         'op': op.lower()
                     })
 
@@ -1082,7 +1106,7 @@ class CodeAnalyzer:
 
         for match in func_pattern.finditer(content):
             func_name = match.group(1) or match.group(2) or match.group(3) or match.group(4)
-            if func_name:
+            if func_name and func_name.lower() not in self.RESERVED_KEYWORDS:
                 start_pos = match.start()
                 # Find body end by counting braces
                 body_start = content.find('{', match.end() - 10)
@@ -1124,6 +1148,7 @@ class CodeAnalyzer:
                 if path:
                     self.found_api_calls.append({
                         'caller': caller_id,
+                        'file': file_path,
                         'path': path,
                         'method': method.lower()
                     })
@@ -1133,6 +1158,7 @@ class CodeAnalyzer:
                 op = db_match.group(1) or db_match.group(2) or 'query'
                 self.found_db_queries.append({
                     'caller': caller_id,
+                    'file': file_path,
                     'op': op.lower()
                 })
 
@@ -1287,9 +1313,44 @@ class CodeAnalyzer:
     # === Cross-Boundary Trace Helpers ===
 
     def _extract_all_routes(self, frameworks: Dict):
-        """Discover all backend API routes in the codebase."""
+        """Discover all backend API routes in the codebase, including router prefixes."""
+        # Use detected frameworks or try all if none detected
         backend_fws = frameworks.get('backend', [])
+        if not backend_fws:
+            backend_fws = list(self.ROUTE_REGEXES.keys())
+        
+        # Maps file path to its common route prefix (detected from include_router/app.use)
+        file_prefixes = {}
+        
+        # Pre-pass: Detect router prefixes in main files
         for file_path, content in self._file_contents.items():
+            # FastAPI prefixes: app.include_router(user_router, prefix="/user")
+            for m in re.finditer(r'include_router\s*\(\s*(\w+).*?prefix\s*=\s*[\'"]([^\'"]+)[\'"]', content):
+                router_name = m.group(1)
+                prefix = m.group(2)
+                import_match = re.search(r'from\s+([\w\.]+)\s+import\s+.*?\b' + router_name + r'\b', content)
+                if import_match:
+                    module_path = import_match.group(1).replace('.', '/')
+                    file_prefixes[module_path] = prefix
+
+            # Express prefixes: app.use('/user', userRouter)
+            for m in re.finditer(r'app\.use\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,\s*(\w+)', content):
+                prefix = m.group(1)
+                router_name = m.group(2)
+                import_match = re.search(r'(?:const|let|var|import).*?\b' + router_name + r'\b.*?from\s+[\'"]([^\'"]+)[\'"]', content)
+                if import_match:
+                    module_path = import_match.group(1).strip('./').replace('\\', '/')
+                    file_prefixes[module_path] = prefix
+
+        for file_path, content in self._file_contents.items():
+            # Get prefix for this file if known
+            base_prefix = ""
+            norm_file_path = file_path.replace('\\', '/')
+            for mod, pre in file_prefixes.items():
+                if mod in norm_file_path:
+                    base_prefix = pre
+                    break
+            
             for fw in backend_fws:
                 regex = self.ROUTE_REGEXES.get(fw)
                 if not regex:
@@ -1304,7 +1365,6 @@ class CodeAnalyzer:
                     if fw == 'Express.js':
                         method = match.group(1).lower()
                         path = match.group(2)
-                        # Capture multiple handlers (middlewares + controller)
                         end_stmt = content.find(')', match.end())
                         if end_stmt != -1:
                             args_segment = content[match.end():end_stmt]
@@ -1336,9 +1396,15 @@ class CodeAnalyzer:
                         handler = handler_match.group(1) if handler_match else None
                     
                     if path and handler:
+                        # Combine base_prefix and path
+                        full_path = (base_prefix.rstrip('/') + '/' + path.lstrip('/')).strip('/')
+                        if not full_path: full_path = "/"
+                        
+                        # Also keep a version without the base_prefix just in case the prefix detection was wrong
                         self.found_routes.append({
                             'file': file_path,
-                            'path': path,
+                            'path': full_path,
+                            'original_path': path.strip('/'),
                             'method': method,
                             'handler': handler,
                             'middlewares': middlewares
@@ -1392,7 +1458,17 @@ class CodeAnalyzer:
                         prev_id = mw_id
                 
                 # Final Handler
-                route_handler_id = f"{matched_route['file']}::{matched_route['handler']}"
+                handler_name = matched_route['handler']
+                # If handler is Class.method, try matching against just 'method' as well
+                if '.' in handler_name:
+                    method_only = handler_name.split('.')[-1]
+                    # Check if qualified ID exists for Class.method
+                    route_handler_id = f"{matched_route['file']}::{handler_name}"
+                    if route_handler_id not in call_graph:
+                        route_handler_id = f"{matched_route['file']}::{method_only}"
+                else:
+                    route_handler_id = f"{matched_route['file']}::{handler_name}"
+
                 if route_handler_id in call_graph:
                     call_graph[route_handler_id]['type'] = 'route'
                     if route_handler_id not in call_graph[prev_id]['calls']:
@@ -1433,29 +1509,38 @@ class CodeAnalyzer:
                     call_graph[caller_id]['type'] = 'service'
 
     def _match_route(self, api_path: str, api_method: str) -> Optional[Dict]:
-        """Match an API path to a backend route definition."""
-        # Normalize: strip leading/trailing slashes and remove query params
+        """Match an API path to a backend route definition with improved fuzzy matching."""
+        # Clean the api_path
+        api_path = re.sub(r'^\$\{[^}]+\}/?', '', api_path)
+        api_path = re.sub(r'^https?://[^/]+/?', '', api_path)
         api_path = api_path.strip('/').split('?')[0]
-        
+        if not api_path: api_path = "/"
+
         for route in self.found_routes:
             if route['method'].lower() != api_method.lower() and route['method'].lower() != 'any':
                 continue
             
-            route_path = route['path'].strip('/')
+            paths_to_try = [route['path'].strip('/'), route.get('original_path', '').strip('/')]
             
-            # Simple exact match
-            if api_path == route_path:
-                return route
+            for rp in paths_to_try:
+                if not rp: rp = "/"
                 
-            # Pattern matching for parameters: /users/:id or /users/{id}
-            # Convert to regex
-            pattern = re.sub(r'[:{][\w-]+}', r'[^/]+', route_path)
-            pattern = re.sub(r':[\w-]+', r'[^/]+', pattern) # express style
-            
-            try:
-                if re.fullmatch(pattern, api_path):
+                # 1. Exact match
+                if api_path == rp:
                     return route
-            except:
-                continue
+                
+                # 2. Fuzzy prefix match
+                if api_path.endswith('/' + rp) or (rp == "/" and api_path in ["api", ""]):
+                    return route
+                
+                # 3. Dynamic parameter matching
+                pattern = re.sub(r'[:{][\w-]+}', r'[^/]+', rp)
+                pattern = re.sub(r':[\w-]+', r'[^/]+', pattern)
+                
+                try:
+                    if re.fullmatch(pattern, api_path) or api_path.endswith('/' + pattern):
+                        return route
+                except:
+                    continue
 
         return None
