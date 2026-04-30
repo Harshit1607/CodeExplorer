@@ -14,10 +14,10 @@ import CallGraph from './CallGraph';
 import ArchitectureDiagram from './ArchitectureDiagram';
 
 interface AnalysisResultsProps {
-  data: any;
+  state: any;
 }
 
-export default function AnalysisResults({ data }: AnalysisResultsProps) {
+export default function AnalysisResults({ state }: AnalysisResultsProps) {
   const [activeTab, setActiveTab] = useState('quickstart');
   const [searchNavigationTarget, setSearchNavigationTarget] = useState<{
     filePath: string;
@@ -52,14 +52,18 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
     { id: 'keyfiles', label: 'Key Files', icon: '⭐' },
   ];
 
-  const structureAnalysis = data.structure_analysis || data.analysis;
+  // Reconstruct files dict from complexity fileList
+  const files = state.complexity?.fileList?.reduce((acc: any, curr: any) => {
+    acc[curr.file] = curr;
+    return acc;
+  }, {}) || {};
 
   return (
     <div className="mt-8 space-y-6">
       {/* Global Search Bar */}
       <div className="flex justify-center">
         <GlobalSearch
-          files={structureAnalysis?.files || {}}
+          files={files}
           onNavigate={handleSearchNavigate}
         />
       </div>
@@ -116,77 +120,77 @@ export default function AnalysisResults({ data }: AnalysisResultsProps) {
         <div className="p-6">
           {activeTab === 'quickstart' && (
             <QuickStartGuide
-              entryPoints={structureAnalysis?.entry_points || []}
-              keyFiles={structureAnalysis?.key_files || []}
-              languages={structureAnalysis?.languages || {}}
-              dependencies={structureAnalysis?.dependencies || {}}
-              frameworks={structureAnalysis?.frameworks}
-              databases={structureAnalysis?.databases}
-              readme={structureAnalysis?.readme}
-              packageManager={structureAnalysis?.package_manager}
-              runScripts={structureAnalysis?.run_scripts}
+              entryPoints={state.entryPoints || []}
+              keyFiles={state.keyFiles || []}
+              languages={state.languages || {}}
+              dependencies={state.dependencies || {}}
+              frameworks={state.frameworks}
+              databases={state.databases}
+              readme={state.quickstart?.readme}
+              packageManager={state.quickstart?.package_manager}
+              runScripts={state.quickstart?.run_scripts}
             />
           )}
 
           {activeTab === 'chat' && (
-            <RepoChat analysisData={data} />
+            <RepoChat analysisData={state} />
           )}
 
           {activeTab === 'search' && (
-            <SemanticSearch analysisData={data} />
+            <SemanticSearch analysisData={state} />
           )}
 
           {activeTab === 'architecture' && (
             <ArchitectureDiagram
-              architecture={structureAnalysis?.architecture || { nodes: [], edges: [], layers: [] }}
+              architecture={state.architecture || { nodes: [], edges: [], layers: [] }}
             />
           )}
 
           {activeTab === 'callgraph' && (
             <CallGraph
-              callGraph={structureAnalysis?.call_graph || {}}
-              files={structureAnalysis?.files || {}}
+              callGraph={state.callGraph || {}}
+              files={files}
             />
           )}
 
           {activeTab === 'complexity' && (
             <ComplexityAnalysis
-              files={structureAnalysis?.files || {}}
+              files={files}
               highlightTarget={searchNavigationTarget}
             />
           )}
 
           {activeTab === 'overview' && (
             <OverviewSection
-              repositoryUrl={data.repository_url}
-              scanResults={data.scan_results}
-              structureAnalysis={structureAnalysis}
+              repositoryUrl={state.repoMeta?.url || "Repository"}
+              scanResults={{}}
+              structureAnalysis={state}
             />
           )}
 
           {activeTab === 'structure' && (
-            <FileTreeSection tree={structureAnalysis?.tree} />
+            <FileTreeSection tree={state.fileTree} />
           )}
 
           {activeTab === 'languages' && (
-            <LanguagesSection languages={structureAnalysis?.languages} />
+            <LanguagesSection languages={state.languages} />
           )}
 
           {activeTab === 'dependencies' && (
-            <DependenciesSection dependencies={structureAnalysis?.dependencies} />
+            <DependenciesSection dependencies={state.dependencies} />
           )}
 
           {activeTab === 'filedeps' && (
             <FileDependencies
-              files={structureAnalysis?.files || {}}
-              fileDependencies={structureAnalysis?.file_dependencies || {}}
+              files={files}
+              fileDependencies={state.fileDependencies || {}}
             />
           )}
 
           {activeTab === 'keyfiles' && (
             <KeyFilesSection
-              keyFiles={structureAnalysis?.key_files}
-              entryPoints={structureAnalysis?.entry_points}
+              keyFiles={state.keyFiles}
+              entryPoints={state.entryPoints}
             />
           )}
         </div>

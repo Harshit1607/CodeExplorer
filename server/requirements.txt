@@ -4,3 +4,4 @@ gitpython
 toml
 groq
 python-dotenv
+httpx

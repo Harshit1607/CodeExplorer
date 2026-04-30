@@ -1,54 +1,38 @@
 import { useState } from 'react';
-import axios from 'axios';
 
 interface RepositoryInputProps {
-  onAnalysisComplete: (data: any) => void;
+  onAnalysisStart: (repoUrl: string) => void;
   isLoading: boolean;
-  setIsLoading: (loading: boolean) => void;
+  error?: string | null;
 }
 
 export default function RepositoryInput({
-  onAnalysisComplete,
+  onAnalysisStart,
   isLoading,
-  setIsLoading,
+  error: externalError,
 }: RepositoryInputProps) {
   const [repoUrl, setRepoUrl] = useState('');
-  const [error, setError] = useState('');
+  const [localError, setLocalError] = useState('');
+
+  const error = externalError || localError;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setLocalError('');
 
     if (!repoUrl.trim()) {
-      setError('Please enter a repository URL');
+      setLocalError('Please enter a repository URL');
       return;
     }
 
     // Basic GitHub URL validation
     const githubRegex = /^https?:\/\/(www\.)?github\.com\/[\w-]+\/[\w.-]+\/?$/;
     if (!githubRegex.test(repoUrl.trim())) {
-      setError('Please enter a valid GitHub repository URL (e.g., https://github.com/user/repo)');
+      setLocalError('Please enter a valid GitHub repository URL (e.g., https://github.com/user/repo)');
       return;
     }
 
-    setIsLoading(true);
-
-    try {
-      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      const response = await axios.post(`${API_BASE_URL}/api/analyze`, {
-        repo_url: repoUrl.trim(),
-      });
-
-      onAnalysisComplete(response.data);
-    } catch (err: any) {
-      console.error('Analysis error:', err);
-      setError(
-        err.response?.data?.detail ||
-        'Failed to analyze repository. Please check the URL and try again.'
-      );
-    } finally {
-      setIsLoading(false);
-    }
+    onAnalysisStart(repoUrl.trim());
   };
 
   return (
