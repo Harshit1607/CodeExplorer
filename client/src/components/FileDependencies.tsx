@@ -41,7 +41,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set()); // Track expanded files in 'selected' mode
   const [searchQuery, setSearchQuery] = useState('');
   const [displayMode, setDisplayMode] = useState<'list' | 'graph'>('graph');
-  const [graphMode, setGraphMode] = useState<'all' | 'selected'>('all');
+  const [graphMode, setGraphMode] = useState<'all' | 'selected'>('selected');
   const [graphDepth, setGraphDepth] = useState(2);
   const [showExternal, setShowExternal] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -605,29 +605,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
         {displayMode === 'graph' && (
           <>
-            {/* Graph Mode: All vs Selected */}
-            <div className="flex gap-1 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
-              <button
-                onClick={() => setGraphMode('all')}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  graphMode === 'all'
-                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                🌐 All Files
-              </button>
-              <button
-                onClick={() => setGraphMode('selected')}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  graphMode === 'selected'
-                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                🎯 Selected File
-              </button>
-            </div>
+            {/* Removed Graph Mode toggle to prevent rendering all files which crashes UI */}
 
             {graphMode === 'selected' && (
               <>

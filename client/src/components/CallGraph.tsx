@@ -46,7 +46,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   const [expandedFunctions, setExpandedFunctions] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [displayMode, setDisplayMode] = useState<'graph' | 'list'>('graph');
-  const [graphMode, setGraphMode] = useState<'all' | 'selected'>('all');
+  const [graphMode, setGraphMode] = useState<'all' | 'selected'>('selected');
   const [graphDepth, setGraphDepth] = useState(2);
   const [groupByFile, setGroupByFile] = useState(true);
   const [fullStackMode, setFullStackMode] = useState(true);
@@ -693,29 +693,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
         {displayMode === 'graph' && (
           <>
-            {/* Graph Mode: All vs Selected */}
-            <div className="flex gap-1 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
-              <button
-                onClick={() => setGraphMode('all')}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  graphMode === 'all'
-                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                🌐 All Functions
-              </button>
-              <button
-                onClick={() => setGraphMode('selected')}
-                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-                  graphMode === 'selected'
-                    ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                🎯 Selected Function
-              </button>
-            </div>
+            {/* Removed Graph Mode toggle to prevent rendering all functions which crashes UI */}
 
             {graphMode === 'selected' && (
               <div className="flex items-center gap-2">
