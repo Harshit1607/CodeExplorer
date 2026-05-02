@@ -41,7 +41,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set()); // Track expanded files in 'selected' mode
   const [searchQuery, setSearchQuery] = useState('');
   const [displayMode, setDisplayMode] = useState<'list' | 'graph'>('graph');
-  const [graphMode, setGraphMode] = useState<'all' | 'selected'>('selected');
+  const graphMode: string = 'selected';
   const [graphDepth, setGraphDepth] = useState(2);
   const [showExternal, setShowExternal] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);

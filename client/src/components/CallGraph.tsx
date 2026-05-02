@@ -46,7 +46,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   const [expandedFunctions, setExpandedFunctions] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [displayMode, setDisplayMode] = useState<'graph' | 'list'>('graph');
-  const [graphMode, setGraphMode] = useState<'all' | 'selected'>('selected');
+  const graphMode: string = 'selected';
   const [graphDepth, setGraphDepth] = useState(2);
   const [groupByFile, setGroupByFile] = useState(true);
   const [fullStackMode, setFullStackMode] = useState(true);
