@@ -119,7 +119,7 @@ class CodeAnalyzer:
         for file_path in self._get_source_files():
             meta = self._analyze_file(file_path)
             if meta:
-                rel = str(file_path.relative_to(self.repo_path))
+                rel = str(file_path.relative_to(self.repo_path)).replace("\\", "/")
                 self.files[rel] = meta
                 self.all_imports.extend(meta.get('imports', []))
 
@@ -200,7 +200,7 @@ class CodeAnalyzer:
             ext = path.suffix.lower()
 
             # Store full content for call graph extraction (will be cleared after analysis)
-            rel = str(path.relative_to(self.repo_path))
+            rel = str(path.relative_to(self.repo_path)).replace("\\", "/")
             self._file_contents[rel] = content
 
             meta = {
@@ -1123,22 +1123,25 @@ class CodeAnalyzer:
         if not known_names:
             return
 
+        call_pattern = re.compile(r'\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(')
+
         # For each function body, search for calls to known functions
         for func_name, body in functions_in_file:
             caller_id = f"{file_path}::{func_name}"
             if caller_id not in call_graph:
                 continue
 
-            for known_name in known_names:
+            called_names = set(call_pattern.findall(body))
+
+            for called_name in called_names:
                 # Skip very short names to avoid false positives
-                if len(known_name) < 2:
+                if len(called_name) < 2 or called_name not in known_names:
                     continue
-                if re.search(r'\b' + re.escape(known_name) + r'\s*\(', body):
-                    resolved = self._resolve_call(known_name, file_path, func_registry, resolved_deps)
-                    for target_id in resolved:
-                        if target_id != caller_id:
-                            if target_id not in call_graph[caller_id]['calls']:
-                                call_graph[caller_id]['calls'].append(target_id)
+                resolved = self._resolve_call(called_name, file_path, func_registry, resolved_deps)
+                for target_id in resolved:
+                    if target_id != caller_id:
+                        if target_id not in call_graph[caller_id]['calls']:
+                            call_graph[caller_id]['calls'].append(target_id)
             
             # --- Cross-Boundary: API calls and DB queries ---
             # Detect fetch/axios calls
@@ -1185,20 +1188,22 @@ class CodeAnalyzer:
                         methods_in_file.append((method_name, content[body_start:body_end]))
 
         known_names = set(func_registry.keys())
+        call_pattern = re.compile(r'\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(')
+
         for method_name, body in methods_in_file:
             caller_id = f"{file_path}::{method_name}"
             if caller_id not in call_graph:
                 continue
 
-            for known_name in known_names:
-                if len(known_name) < 2:
+            called_names = set(call_pattern.findall(body))
+            for called_name in called_names:
+                if len(called_name) < 2 or called_name not in known_names:
                     continue
-                if re.search(r'\b' + re.escape(known_name) + r'\s*\(', body):
-                    resolved = self._resolve_call(known_name, file_path, func_registry, resolved_deps)
-                    for target_id in resolved:
-                        if target_id != caller_id:
-                            if target_id not in call_graph[caller_id]['calls']:
-                                call_graph[caller_id]['calls'].append(target_id)
+                resolved = self._resolve_call(called_name, file_path, func_registry, resolved_deps)
+                for target_id in resolved:
+                    if target_id != caller_id:
+                        if target_id not in call_graph[caller_id]['calls']:
+                            call_graph[caller_id]['calls'].append(target_id)
 
     def _extract_go_calls(self, file_path: str, content: str,
                           call_graph: Dict, func_registry: Dict,
@@ -1220,20 +1225,22 @@ class CodeAnalyzer:
                         funcs_in_file.append((func_name, content[body_start:body_end]))
 
         known_names = set(func_registry.keys())
+        call_pattern = re.compile(r'\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(')
+
         for func_name, body in funcs_in_file:
             caller_id = f"{file_path}::{func_name}"
             if caller_id not in call_graph:
                 continue
 
-            for known_name in known_names:
-                if len(known_name) < 2:
+            called_names = set(call_pattern.findall(body))
+            for called_name in called_names:
+                if len(called_name) < 2 or called_name not in known_names:
                     continue
-                if re.search(r'\b' + re.escape(known_name) + r'\s*\(', body):
-                    resolved = self._resolve_call(known_name, file_path, func_registry, resolved_deps)
-                    for target_id in resolved:
-                        if target_id != caller_id:
-                            if target_id not in call_graph[caller_id]['calls']:
-                                call_graph[caller_id]['calls'].append(target_id)
+                resolved = self._resolve_call(called_name, file_path, func_registry, resolved_deps)
+                for target_id in resolved:
+                    if target_id != caller_id:
+                        if target_id not in call_graph[caller_id]['calls']:
+                            call_graph[caller_id]['calls'].append(target_id)
 
     def _find_brace_end(self, content: str, start: int) -> int:
         """Find matching closing brace from a position."""

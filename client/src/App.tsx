@@ -1,16 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import RepositoryInput from './components/RepositoryInput';
 import AnalysisResults from './components/AnalysisResults';
 import { useTheme } from './context/ThemeContext';
+import { useAnalysis } from './hooks/useAnalysis';
 
 function App() {
-  const [analysisData, setAnalysisData] = useState<any>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const { theme, toggleTheme } = useTheme();
+  const { state: analysisState, startAnalysis, resetAnalysis } = useAnalysis();
 
-  const handleAnalysisComplete = (data: any) => {
-    setAnalysisData(data);
+  const handleAnalysisStart = (repoUrl: string) => {
+    startAnalysis(repoUrl, true);
   };
+
+  useEffect(() => {
+    const lastRepo = sessionStorage.getItem('codeexplorer_last_repo');
+    if (lastRepo && analysisState.status === 'idle') {
+      startAnalysis(lastRepo, false);
+    }
+  }, [startAnalysis]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -24,6 +31,9 @@ function App() {
     };
   }, []);
 
+  const showResults = analysisState.status === 'streaming' || analysisState.status === 'complete';
+  const showLoading = analysisState.status === 'connecting' || analysisState.status === 'streaming';
+
   return (
     <>
       <div className="mirrored-bg"></div>
@@ -31,14 +41,18 @@ function App() {
         <header className="bg-[var(--bg-secondary)] shadow-sm border-b border-[var(--border-color)]">
           <div className="px-4 sm:px-6 lg:px-8 py-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-[var(--text-primary)] rounded-xl flex items-center justify-center shadow-lg">
+              <div 
+                className="flex items-center gap-3 cursor-pointer group"
+                onClick={resetAnalysis}
+                title="Go to Home / Start New Analysis"
+              >
+                <div className="w-10 h-10 bg-[var(--text-primary)] rounded-xl flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
                   <svg className="w-6 h-6 text-[var(--bg-primary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
                   </svg>
                 </div>
                 <div>
-                  <h1 className="text-2xl font-bold text-[var(--text-primary)]">
+                  <h1 className="text-2xl font-bold text-[var(--text-primary)] group-hover:text-primary-500 transition-colors">
                     CodeExplorer
                   </h1>
                   <p className="text-xs text-[var(--text-secondary)]">
@@ -47,7 +61,19 @@ function App() {
                 </div>
               </div>
 
-              {/* Theme Toggle */}
+              <div className="flex items-center gap-4">
+                {(showResults || showLoading) && (
+                  <button
+                    onClick={resetAnalysis}
+                    className="px-4 py-2 text-sm font-medium text-[var(--text-primary)] bg-[var(--bg-tertiary)] border border-[var(--border-color)] hover:border-primary-400 hover:text-primary-500 rounded-lg transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                    </svg>
+                    New Analysis
+                  </button>
+                )}
+                {/* Theme Toggle */}
               <button
                 onClick={toggleTheme}
                 className="relative flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-color)] hover:border-primary-400 transition-all duration-200"
@@ -95,31 +121,45 @@ function App() {
                   </svg>
                 </div>
               </button>
+              </div>
             </div>
           </div>
         </header>
 
-        <main className={`flex-1 max-w-[1800px] mx-auto px-4 sm:px-6 lg:px-8 w-full ${!analysisData && !isLoading ? 'flex flex-col justify-center py-8' : 'py-8'
+        <main className={`flex-1 max-w-[1800px] mx-auto px-4 sm:px-6 lg:px-8 w-full ${!showResults && !showLoading ? 'flex flex-col justify-center py-8' : 'py-8'
           }`}>
-          <div className={!analysisData && !isLoading ? 'w-full' : ''}>
+          <div className={!showResults && !showLoading ? 'w-full' : ''}>
             <RepositoryInput
-              onAnalysisComplete={handleAnalysisComplete}
-              isLoading={isLoading}
-              setIsLoading={setIsLoading}
+              onAnalysisStart={handleAnalysisStart}
+              isLoading={showLoading}
+              error={analysisState.error}
             />
 
-            {isLoading && (
-              <div className="mt-8 text-center">
-                <div className="inline-flex items-center gap-3 bg-[var(--bg-secondary)] px-6 py-4 rounded-xl shadow-lg border border-[var(--border-color)]">
-                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary-500 border-t-transparent"></div>
-                  <span className="text-[var(--text-primary)]">Analyzing repository...</span>
+            {showLoading && (
+              <div className="mt-8">
+                <div className="bg-[var(--bg-secondary)] p-6 rounded-xl shadow-lg border border-[var(--border-color)]">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-[var(--text-primary)]">{analysisState.stage}</span>
+                    <span className="text-sm font-medium text-primary-500">{analysisState.progress}%</span>
+                  </div>
+                  <div className="w-full bg-[var(--bg-tertiary)] rounded-full h-2.5">
+                    <div 
+                      className="bg-primary-500 h-2.5 rounded-full transition-all duration-300" 
+                      style={{ width: `${analysisState.progress}%` }}
+                    ></div>
+                  </div>
+                  <div className="mt-4 max-h-32 overflow-y-auto text-xs text-[var(--text-muted)] space-y-1">
+                    {analysisState.events.slice(0, 5).map((ev, i) => (
+                      <div key={i}>✓ Received: {ev}</div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          {analysisData && !isLoading && (
-            <AnalysisResults data={analysisData} />
+          {showResults && (
+            <AnalysisResults state={analysisState} />
           )}
         </main>
 
