@@ -244,8 +244,20 @@ def semantic_search(query: str, analysis_data: Dict, limit: int = 30) -> List[Di
     if not query.strip():
         return []
 
-    structure = analysis_data.get("structure_analysis", {})
-    files = structure.get("files", {})
+    # Determine format (streaming vs old)
+    is_streaming = "repoMeta" in analysis_data
+    
+    files = {}
+    if is_streaming:
+        for f in analysis_data.get("complexity", {}).get("fileList", []):
+            files[f["file"]] = {
+                "functions": f.get("functions", []),
+                "classes": f.get("classes", []),
+                "imports": f.get("imports", [])  # Complexity list might not have imports, but just in case
+            }
+    else:
+        structure = analysis_data.get("structure_analysis", {})
+        files = structure.get("files", {})
 
     # Parse query
     query_terms = set(re.findall(r'\w+', query.lower()))
