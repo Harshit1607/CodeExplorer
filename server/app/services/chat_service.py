@@ -1,4 +1,5 @@
 import os
+import requests
 from groq import Groq
 from fastapi import HTTPException
 from typing import List
@@ -70,34 +71,89 @@ def prioritize_files(files: dict, key_files: List[str], entry_points: List[str],
 
     return priority_order
 
+def fetch_file_content(repo_url: str, default_branch: str, file_path: str) -> str:
+    """Fetch file content directly from GitHub."""
+    if not repo_url or not repo_url.startswith("https://github.com/"):
+        return ""
+        
+    parts = repo_url.rstrip('/').split('/')
+    if len(parts) < 2:
+        return ""
+        
+    owner, repo = parts[-2], parts[-1]
+    if repo.endswith('.git'):
+        repo = repo[:-4]
+        
+    branch = default_branch or "main"
+    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{file_path}"
+    
+    try:
+        resp = requests.get(raw_url, timeout=5.0)
+        if resp.status_code == 200:
+            return resp.text
+    except Exception as e:
+        print(f"Failed to fetch {file_path}: {e}")
+        
+    return ""
+
 def build_context(analysis_data: dict, question: str = "", max_code_files: int = 6) -> str:
     """Build a comprehensive context string including actual code for the LLM."""
     context_parts = []
     current_size = 0
 
-    structure = analysis_data.get("structure_analysis", {})
+    # Determine format (streaming vs old)
+    is_streaming = "repoMeta" in analysis_data
+    
+    if is_streaming:
+        repo_url = analysis_data.get("repoMeta", {}).get("url", "Unknown")
+        default_branch = analysis_data.get("repoMeta", {}).get("default_branch", "main")
+        readme = analysis_data.get("quickstart", {}).get("readme", "")
+        languages = analysis_data.get("languages", {})
+        frameworks_dict = analysis_data.get("frameworks", {})
+        frontend = frameworks_dict.get("frontend", []) if isinstance(frameworks_dict, dict) else []
+        backend = frameworks_dict.get("backend", []) if isinstance(frameworks_dict, dict) else []
+        databases = analysis_data.get("databases", [])
+        entry_points = analysis_data.get("entryPoints", [])
+        key_files = analysis_data.get("keyFiles", [])
+        dependencies = analysis_data.get("dependencies", {})
+        
+        # files mapping
+        files = {}
+        for f in analysis_data.get("complexity", {}).get("fileList", []):
+            files[f["file"]] = {
+                "functions": f.get("functions", []),
+                "classes": f.get("classes", [])
+            }
+    else:
+        structure = analysis_data.get("structure_analysis", {})
+        repo_url = analysis_data.get("repository_url", "Unknown")
+        default_branch = "main"
+        readme = structure.get("readme", {}).get("content", "")
+        languages = structure.get("languages", {})
+        frameworks_dict = structure.get("frameworks", {})
+        frontend = frameworks_dict.get("frontend", []) if isinstance(frameworks_dict, dict) else []
+        backend = frameworks_dict.get("backend", []) if isinstance(frameworks_dict, dict) else []
+        databases = structure.get("databases", [])
+        entry_points = structure.get("entry_points", [])
+        key_files = structure.get("key_files", [])
+        dependencies = structure.get("dependencies", {})
+        files = structure.get("files", {})
 
     # Repository overview
-    repo_url = analysis_data.get("repository_url", "Unknown")
     context_parts.append(f"# Repository: {repo_url}\n")
 
     # README content (very important for understanding the project)
-    readme = structure.get("readme", {})
-    if readme and readme.get("content"):
-        readme_content = readme["content"][:5000]  # Limit README size
+    if readme:
+        readme_content = readme[:5000]  # Limit README size
         context_parts.append(f"## README\n```\n{readme_content}\n```\n")
 
     # Languages
-    languages = structure.get("languages", {})
     if languages:
         lang_summary = ", ".join([f"{lang} ({info.get('count', 0)} files)" for lang, info in languages.items()])
         context_parts.append(f"## Languages\n{lang_summary}\n")
 
     # Frameworks
-    frameworks = structure.get("frameworks", {})
-    if frameworks:
-        frontend = frameworks.get("frontend", [])
-        backend = frameworks.get("backend", [])
+    if frontend or backend:
         if frontend:
             context_parts.append(f"**Frontend:** {', '.join(frontend)}")
         if backend:
@@ -105,16 +161,10 @@ def build_context(analysis_data: dict, question: str = "", max_code_files: int =
         context_parts.append("")
 
     # Databases
-    databases = structure.get("databases", [])
     if databases:
         context_parts.append(f"**Databases:** {', '.join(databases)}\n")
 
-    # Entry points
-    entry_points = structure.get("entry_points", [])
-    key_files = structure.get("key_files", [])
-
     # Dependencies summary
-    dependencies = structure.get("dependencies", {})
     if dependencies:
         context_parts.append("## Dependencies")
         for dep_type, deps in dependencies.items():
@@ -124,8 +174,6 @@ def build_context(analysis_data: dict, question: str = "", max_code_files: int =
                         context_parts.append(f"**{source}:** {', '.join(dep_list[:20])}")
         context_parts.append("")
 
-    # Get all files
-    files = structure.get("files", {})
     if not files:
         return "\n".join(context_parts)
 
@@ -165,13 +213,17 @@ def build_context(analysis_data: dict, question: str = "", max_code_files: int =
 
         info = files.get(file_path, {})
         content = info.get("content", "")
+        
+        if not content and is_streaming:
+            content = fetch_file_content(repo_url, default_branch, file_path)
 
         if not content:
             continue
 
         # Check if we have room for this file
         file_header = f"### {file_path}\n"
-        file_block = f"```{info.get('language', '').lower().split()[0]}\n{content}\n```\n\n"
+        language = info.get('language', '').lower().split()[0] if info.get('language') else ''
+        file_block = f"```{language}\n{content}\n```\n\n"
 
         new_size = current_size + len(file_header) + len(file_block)
         if new_size > MAX_CONTEXT_CHARS:
@@ -179,7 +231,7 @@ def build_context(analysis_data: dict, question: str = "", max_code_files: int =
             max_content = MAX_CONTEXT_CHARS - current_size - len(file_header) - 100
             if max_content > 500:  # Only include if we can show at least 500 chars
                 truncated = content[:max_content] + "\n... [truncated]"
-                file_block = f"```{info.get('language', '').lower().split()[0]}\n{truncated}\n```\n\n"
+                file_block = f"```{language}\n{truncated}\n```\n\n"
                 context_parts.append(file_header)
                 context_parts.append(file_block)
                 files_included += 1
