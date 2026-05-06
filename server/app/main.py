@@ -10,13 +10,18 @@ from app.api.search import router as search_router
 
 app = FastAPI(title="CodeExplorer")
 
+# Verify reload
+print("\n" + "="*50)
+print("  SERVER RELOADED - CORS FIX APPLIED")
+print("="*50 + "\n")
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_origins=["*"],
+    allow_credentials=False, # Temporarily disable for maximum compatibility
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(analyze_router, prefix="/api")

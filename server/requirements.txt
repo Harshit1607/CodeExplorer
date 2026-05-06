@@ -5,3 +5,4 @@ toml
 groq
 python-dotenv
 httpx
+requests

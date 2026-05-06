@@ -98,28 +98,41 @@ def fetch_file_content(repo_url: str, default_branch: str, file_path: str) -> st
 
 def build_context(analysis_data: dict, question: str = "", max_code_files: int = 6) -> str:
     """Build a comprehensive context string including actual code for the LLM."""
+    if not analysis_data:
+        return "No analysis data available. The user should analyze the repository first."
+
     context_parts = []
     current_size = 0
 
     # Determine format (streaming vs old)
-    is_streaming = "repoMeta" in analysis_data
+    is_streaming = isinstance(analysis_data, dict) and "repoMeta" in analysis_data
     
     if is_streaming:
-        repo_url = analysis_data.get("repoMeta", {}).get("url", "Unknown")
-        default_branch = analysis_data.get("repoMeta", {}).get("default_branch", "main")
-        readme = analysis_data.get("quickstart", {}).get("readme", "")
-        languages = analysis_data.get("languages", {})
-        frameworks_dict = analysis_data.get("frameworks", {})
+        repo_meta = analysis_data.get("repoMeta") or {}
+        repo_url = repo_meta.get("url", "Unknown")
+        default_branch = repo_meta.get("default_branch", "main")
+        
+        quickstart = analysis_data.get("quickstart") or {}
+        readme_raw = quickstart.get("readme", "")
+        # readme can be a dict {content, filename} or a plain string
+        if isinstance(readme_raw, dict):
+            readme = readme_raw.get("content", "")
+        else:
+            readme = readme_raw or ""
+        
+        languages = analysis_data.get("languages") or {}
+        frameworks_dict = analysis_data.get("frameworks") or {}
         frontend = frameworks_dict.get("frontend", []) if isinstance(frameworks_dict, dict) else []
         backend = frameworks_dict.get("backend", []) if isinstance(frameworks_dict, dict) else []
-        databases = analysis_data.get("databases", [])
-        entry_points = analysis_data.get("entryPoints", [])
-        key_files = analysis_data.get("keyFiles", [])
-        dependencies = analysis_data.get("dependencies", {})
+        databases = analysis_data.get("databases") or []
+        entry_points = analysis_data.get("entryPoints") or []
+        key_files = analysis_data.get("keyFiles") or []
+        dependencies = analysis_data.get("dependencies") or {}
         
         # files mapping
         files = {}
-        for f in analysis_data.get("complexity", {}).get("fileList", []):
+        complexity = analysis_data.get("complexity") or {}
+        for f in complexity.get("fileList", []):
             files[f["file"]] = {
                 "functions": f.get("functions", []),
                 "classes": f.get("classes", [])
@@ -143,7 +156,7 @@ def build_context(analysis_data: dict, question: str = "", max_code_files: int =
     context_parts.append(f"# Repository: {repo_url}\n")
 
     # README content (very important for understanding the project)
-    if readme:
+    if readme and isinstance(readme, str):
         readme_content = readme[:5000]  # Limit README size
         context_parts.append(f"## README\n```\n{readme_content}\n```\n")
 
