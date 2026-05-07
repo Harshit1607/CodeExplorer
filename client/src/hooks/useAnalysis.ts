@@ -12,6 +12,7 @@ export interface AnalysisState {
   complexity: any;
   architecture: any;
   quickstart: any;
+  aiReport: any;
   keyFiles: any[];
   entryPoints: any[];
   progress: number;
@@ -34,6 +35,7 @@ export function useAnalysis() {
     complexity: { files: 0, lines: 0, functions: 0, classes: 0, fileList: [] },
     architecture: null,
     quickstart: null,
+    aiReport: null,
     keyFiles: [],
     entryPoints: [],
     progress: 0,
@@ -59,6 +61,7 @@ export function useAnalysis() {
       complexity: { files: 0, lines: 0, functions: 0, classes: 0, fileList: [] },
       architecture: null,
       quickstart: null,
+      aiReport: null,
       keyFiles: [],
       entryPoints: [],
       progress: 0,
@@ -166,6 +169,9 @@ export function useAnalysis() {
             case 'quickstart_ready':
               next.quickstart = data;
               break;
+            case 'ai_report_ready':
+              next.aiReport = data;
+              break;
             case 'analysis_complete':
               next.status = 'complete';
               next.stage = 'Analysis Complete';
@@ -187,12 +193,16 @@ export function useAnalysis() {
     };
 
     es.onerror = (err) => {
-      console.error('SSE Error:', err);
-      setState(s => {
-        if (s.status === 'complete') return s;
-        return { ...s, status: 'error', error: 'Connection lost to server.' };
-      });
-      es.close();
+      // Don't treat a normal close or reconnection attempt as a fatal error immediately
+      if (es.readyState === EventSource.CLOSED) {
+        console.error('SSE Connection Closed:', err);
+        setState(s => {
+          if (s.status === 'complete' || s.status === 'error') return s;
+          return { ...s, status: 'error', error: 'Connection to server lost. Please try again.' };
+        });
+      } else if (es.readyState === EventSource.CONNECTING) {
+        console.warn('SSE Reconnecting...');
+      }
     };
   }, []);
 

@@ -48,6 +48,8 @@ async def analyze_stream(repo: str, request: Request, session_id: str = None):
                 yield event
                 
                 if "analysis_complete" in event or ("error" in event and '"stage": "Pipeline"' in event):
+                    # Give client a moment to receive the final message
+                    await asyncio.sleep(2)
                     break
         except asyncio.CancelledError:
             pass

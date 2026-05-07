@@ -12,6 +12,7 @@ import RepoChat from './RepoChat';
 import SemanticSearch from './SemanticSearch';
 import CallGraph from './CallGraph';
 import ArchitectureDiagram from './ArchitectureDiagram';
+import AIReportSection from './AIReportSection';
 
 interface AnalysisResultsProps {
   state: any;
@@ -39,6 +40,7 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
 
   const tabs = [
     { id: 'quickstart', label: 'Quick Start', icon: '🚀' },
+    { id: 'ai', label: 'AI Intelligence', icon: '🧠' },
     { id: 'chat', label: 'Chat', icon: '💬' },
     { id: 'search', label: 'Search', icon: '🔍' },
     { id: 'architecture', label: 'Architecture', icon: '🏗️' },
@@ -134,6 +136,13 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
 
           {activeTab === 'chat' && (
             <RepoChat analysisData={state} />
+          )}
+
+          {activeTab === 'ai' && (
+            <AIReportSection 
+              report={state.aiReport} 
+              isLoading={state.status === 'streaming'} 
+            />
           )}
 
           {activeTab === 'search' && (

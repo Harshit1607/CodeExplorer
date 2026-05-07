@@ -13,6 +13,7 @@ import asyncio
 
 from app.services.code_analyzer import CodeAnalyzer
 from app.services.architecture_service import ArchitectureAnalyzer
+from app.services.ai_analyzer import AIAnalyzer
 
 def format_sse(event: str, stage: str, progress: int, data: dict) -> str:
     msg = {
@@ -76,6 +77,7 @@ class StreamingPipeline:
             
             await self._run_deep_analysis()
             
+            print(f"[{self.repo_id}] Analysis complete, broadcasting final event...")
             await self.broadcast(format_sse("analysis_complete", "Complete", 100, {"message": "All done"}))
             self.is_done = True
             
@@ -89,7 +91,7 @@ class StreamingPipeline:
     async def _heartbeat(self):
         try:
             while not self.is_done:
-                await asyncio.sleep(15)
+                await asyncio.sleep(5)  # More frequent heartbeats
                 await self.broadcast(": heartbeat\n\n")
         except asyncio.CancelledError:
             pass
@@ -260,7 +262,40 @@ class StreamingPipeline:
                 "run_scripts": self.analyzer._extract_run_scripts()
             }
             asyncio.run_coroutine_threadsafe(self.broadcast(format_sse("quickstart_ready", "Stage 3", 96, qs)), loop)
-        await loop.run_in_executor(self.executor, _qs)
+            return qs
+        qs = await loop.run_in_executor(self.executor, _qs)
+
+        async def _ai_report():
+            # Gather all current results for the AI context
+            analysis_data = {
+                "repoMeta": {
+                    "url": self.repo_url,
+                    "name": self.repo_url.split('/')[-1]
+                },
+                "languages": self.analyzer._language_stats(),
+                "frameworks": fw,
+                "databases": db,
+                "entryPoints": self.analyzer._entry_points(),
+                "keyFiles": self.analyzer._key_files(),
+                "complexity": {
+                    "fileList": [
+                        {
+                            "file": rel,
+                            "lines": m.get("lines", 0),
+                            "functions": m.get("functions", []),
+                            "classes": m.get("classes", [])
+                        } for rel, m in self.analyzer.files.items()
+                    ]
+                },
+                "quickstart": qs
+            }
+            
+            ai = AIAnalyzer(analysis_data)
+            report = await ai.generate_report()
+            await self.broadcast(format_sse("ai_report_ready", "Stage 4", 99, report))
+
+        # Run AI report generation
+        await _ai_report()
 
     def _cleanup(self):
         try:
