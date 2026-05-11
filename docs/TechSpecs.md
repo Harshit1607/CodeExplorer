@@ -11,19 +11,24 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 ## 2. High-Level Flow
 
 1. User submits a public GitHub repository URL
-2. Backend clones the repository temporarily
-3. Repository is scanned and analyzed (structure, dependencies, call graph, architecture)
-4. Metadata, dependencies, and code intelligence data are generated
-5. Results are exposed via APIs
-6. Frontend renders insights, visualizations, and interactive tools
-7. Cloned repository is cleaned up after analysis
+2. Backend initiates a **Streaming Pipeline** with a unique session ID
+3. Repository metadata is fetched via GitHub API
+4. Backend clones the repository temporarily using a background task
+5. **Concurrent Scanner** watches the clone directory and processes files as they appear
+6. Static analysis results are streamed to the client via **Server-Sent Events (SSE)**
+7. Deep analysis (call graph, architecture) is performed concurrently after cloning completes
+8. AI-generated architecture report is produced as the final stage
+9. Results are rendered incrementally on the frontend dashboard
+10. Cloned repository is cleaned up after the pipeline finishes
 
 ---
 
 ## 3. Backend Components
 
-- **Repo Ingestor**: Clones public GitHub repositories using GitPython and returns a temporary path
-- **Repo Scanner**: Performs basic repository scanning and file enumeration
+- **Streaming Pipeline**: Orchestrates the analysis lifecycle, broadcasting real-time events via SSE. Manages stages from ingestion to AI reporting.
+- **Concurrent Executor**: A `ThreadPoolExecutor` based system that parallelizes file analysis, enabling high-speed scanning of large codebases.
+- **Repo Ingestor**: Clones public GitHub repositories using GitPython and returns a temporary path.
+- **Repo Scanner**: Performs basic repository scanning and file enumeration.
 - **Code Analyzer**: Comprehensive static analysis engine that extracts:
   - Imports and dependencies per file
   - Functions and their signatures
@@ -33,9 +38,10 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - Call graph (function-to-function call relationships)
   - File-level dependency graph with circular dependency detection
   - Framework and database detection
-- **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers (Frontend, API, Middleware, Services, Data, Config, Tests, Utils) and detecting component relationships
-- **Semantic Search Service**: Concept-based code search using 50+ concept categories with 500+ related terms, enabling search by meaning rather than exact names
-- **Chat Service**: AI-powered chat about the analyzed repository using Groq API, with intelligent context building and file prioritization
+- **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers.
+- **AI Analyzer**: Generates automated architectural summaries and insights using LLMs (Groq API).
+- **Semantic Search Service**: Concept-based code search using 50+ concept categories.
+- **Chat Service**: AI-powered chat about the analyzed repository with intelligent context building.
 
 ---
 
@@ -71,10 +77,19 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 
 ## 6. API Endpoints
 
-- `POST /api/analyze` — Submit a GitHub repository URL for cloning, scanning, and full analysis. Returns scan results, file structure, languages, dependencies, call graph, file dependencies, architecture, frameworks, and databases.
-- `POST /api/structure` — Analyze a local repository structure
-- `POST /api/search` — Concept-based semantic search across files, functions, classes, and imports. Accepts a query and analysis data, returns ranked and grouped results with relevance scores.
-- `POST /api/chat` — AI-powered Q&A about the analyzed repository. Accepts a question, analysis data, and optional chat history. Uses Groq API with intelligent context building (28k character limit). Returns AI-generated answers grounded in repository content.
+- `GET /api/analyze/stream` — Initiates/reconnects to a streaming analysis session. Returns a Server-Sent Event (SSE) stream broadcasting:
+  - `repo_meta`: Initial GitHub repository data
+  - `file_tree`: Full repository file structure
+  - `file_complexity`: Incremental file-level metrics (LOC, functions)
+  - `language_dist`: Language breakdown
+  - `framework_detected`: Frameworks, databases, and dependencies
+  - `dependency_edge`: File-level dependency graph edges
+  - `call_node` / `call_edge`: Function call graph components
+  - `architecture_ready`: ReactFlow architecture data
+  - `ai_report_ready`: AI-generated architecture summary
+- `POST /api/analyze` — Legacy endpoint for full analysis (synchronous).
+- `POST /api/search` — Concept-based semantic search across files, functions, and classes.
+- `POST /api/chat` — AI-powered Q&A about the analyzed repository.
 
 ---
 
@@ -85,19 +100,26 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 - Example repository suggestions (React, Next.js)
 - Loading state and error handling
 
-### Dashboard (Tabbed Interface — 12 Tabs)
-1. **Quick Start** — Auto-generated setup and installation guide with language/framework detection, package manager suggestions, install/run commands, Docker/Makefile support, and entry point listing
-2. **Chat** — AI-powered conversational interface for asking questions about the codebase, with suggested questions, chat history, rate-limit handling, and retry functionality
-3. **Search** — Semantic code search with suggested searches, type filtering (files, functions, classes, imports), and relevance scoring (high/medium/low)
-4. **Architecture** — ReactFlow-based layered architecture diagram with 8 layer types (Frontend, API, Middleware, Services, Data, Config, Tests, Utils), custom nodes, mini-map, and component statistics
-5. **Call Graph** — Interactive D3.js force-directed graph showing function-to-function call relationships with graph/list views, depth control (1–5), color coding, search, grouping by file, and statistics
-6. **Complexity** — Recharts bar chart ranking files by complexity (lines of code, function count, class count)
-7. **Overview** — Repository statistics (total files, languages, entry points, key files) with language breakdown
-8. **File Structure** — Interactive file tree display
-9. **Languages** — Language distribution visualization
-10. **Dependencies** — Project dependency listing (npm, pip, cargo, go modules)
-11. **File Dependencies** — Interactive D3.js graph of file import/export relationships with circular dependency detection, external package tracking, graph/list views, and depth control
-12. **Key Files** — Highlights important files (README, LICENSE, Dockerfile, config files, entry points)
+### Dashboard (Tabbed Interface — 13 Tabs)
+1. **AI Report** — Automated architecture overview, key component identification, and codebase insights generated by AI (Stage 4)
+2. **Quick Start** — Auto-generated setup and installation guide with language/framework detection, package manager suggestions, install/run commands, Docker/Makefile support, and entry point listing
+3. **Chat** — AI-powered conversational interface for asking questions about the codebase
+4. **Search** — Semantic code search with suggested searches, type filtering (files, functions, classes), and relevance scoring
+5. **Architecture** — ReactFlow-based layered architecture diagram with 8 layer types
+6. **Call Graph** — Interactive D3.js force-directed graph showing function-to-function call relationships (streams nodes/edges in real-time)
+7. **Complexity** — Recharts bar chart ranking files by complexity (updates incrementally during scan)
+8. **Overview** — Repository statistics and language breakdown
+9. **File Structure** — Interactive file tree display (available immediately after scan)
+10. **Languages** — Language distribution visualization
+11. **Dependencies** — Project dependency listing (npm, pip, cargo, go modules)
+12. **File Dependencies** — Interactive D3.js graph of file import/export relationships
+13. **Key Files** — Highlights important files (README, LICENSE, Dockerfile, etc.)
+
+### Real-time Progress
+- Multi-stage progress bar showing current pipeline state
+- Real-time event log showing backend actions
+- Incremental data rendering (tabs populate as data arrives)
+- Reconnection support for interrupted streams
 
 ### Global Search Bar
 - Searchable index across all files, functions, and classes

@@ -18,6 +18,8 @@ There is no free tool that provides automated, architecture-level understanding 
 
 - Enable fast understanding of unfamiliar repositories
 - Provide hallucination-free explanations grounded in repository content
+- **Real-time Pipeline**: Provide immediate feedback during the analysis process via streaming
+- **High Performance**: Utilize concurrent processing to handle large repositories efficiently
 - Reduce developer onboarding time with auto-generated setup guides
 - Present insights through interactive, explorable visualizations
 - Allow natural-language queries about the codebase
@@ -35,7 +37,9 @@ There is no free tool that provides automated, architecture-level understanding 
 
 ## 5. Features
 
-### Core Analysis
+### Core Analysis & Pipeline
+- **Streaming Analysis Pipeline** — Real-time progress updates via Server-Sent Events (SSE) in 4 stages (Meta, Scan, Deep Analysis, AI Reporting)
+- **Concurrent Processing Engine** — Multi-threaded static analysis (8 workers) for high-speed scanning
 - Single public GitHub repository analysis via URL input
 - Comprehensive static code analysis (19+ languages)
 - Framework detection (React, Vue, Angular, Django, FastAPI, Express, Spring, etc.)
@@ -52,6 +56,7 @@ There is no free tool that provides automated, architecture-level understanding 
 - **Language Distribution** — Visualization of language breakdown across the codebase
 
 ### AI-Powered Features
+- **AI Architecture Report** — Automated high-level overview, component analysis, and structural insights generated as the final pipeline stage
 - **Repository Chat** — Conversational AI interface (powered by Groq API) for asking questions about the codebase. Includes suggested questions, chat history, intelligent context building with file prioritization, and error handling with rate-limit awareness
 - **Semantic Search** — Concept-based code search using 50+ concept categories. Search by meaning (e.g., "auth" finds authentication, login, JWT, OAuth), with suggested searches, relevance scoring, and type filtering
 
