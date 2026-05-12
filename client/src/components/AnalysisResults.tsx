@@ -40,17 +40,17 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
 
   const tabs = [
     { id: 'quickstart', label: 'Quick Start', icon: '🚀' },
-    { id: 'ai', label: 'AI Intelligence', icon: '🧠' },
+    { id: 'ai', label: 'AI Insights', icon: '🧠' },
     { id: 'chat', label: 'Chat', icon: '💬' },
+    { id: 'callgraph', label: 'Call Graph', icon: '🔀' },
+    { id: 'filedeps', label: 'File Graph', icon: '🔗' },
     { id: 'search', label: 'Search', icon: '🔍' },
     { id: 'architecture', label: 'Architecture', icon: '🏗️' },
-    { id: 'callgraph', label: 'Call Graph', icon: '🔀' },
     { id: 'complexity', label: 'Complexity', icon: '🎯' },
     { id: 'overview', label: 'Overview', icon: '📊' },
     { id: 'structure', label: 'File Structure', icon: '📁' },
     { id: 'languages', label: 'Languages', icon: '💻' },
     { id: 'dependencies', label: 'Dependencies', icon: '📦' },
-    { id: 'filedeps', label: 'File Dependencies', icon: '🔗' },
     { id: 'keyfiles', label: 'Key Files', icon: '⭐' },
   ];
 
