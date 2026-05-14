@@ -381,7 +381,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
 
     // Set up SVG dimensions
     const width = 900;
-    const height = 550;
+    const height = 700;
     const svg = d3.select(svgRef.current)
       .attr('width', '100%')
       .attr('height', '100%')
@@ -633,7 +633,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 relative">
       {/* Header with Stats */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -758,7 +758,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
               )}
             </div>
 
-            <div className="max-h-[500px] overflow-y-auto space-y-1">
+            <div className="max-h-[650px] overflow-y-auto space-y-1">
               {groupByFile ? (
                 Object.entries(functionsByFile)
                   .filter(([file]) => filteredFunctions.some(f => callGraph[f]?.file === file))
@@ -924,10 +924,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     </div>
                   )}
                 </div>
-                <svg ref={svgRef} className="w-full h-[550px] bg-slate-50 dark:bg-slate-900 rounded-lg" />
+                <svg ref={svgRef} className="w-full h-[700px] bg-slate-50 dark:bg-slate-900 rounded-lg" />
               </div>
             ) : (
-              <div className="flex items-center justify-center h-[550px] bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+              <div className="flex items-center justify-center h-[700px] bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
                 <div className="text-center">
                   <div className="text-5xl mb-4">👈</div>
                   <p className="text-lg text-slate-600 dark:text-slate-400">
@@ -973,7 +973,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     Calls ({selectedInfo.calls.length})
                   </h5>
                   {selectedInfo.calls.length > 0 ? (
-                    <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                    <div className="space-y-1 max-h-[350px] overflow-y-auto">
                       {selectedInfo.calls.map(calleeId => {
                         const callee = callGraph[calleeId];
                         return (
@@ -1006,7 +1006,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     Called By ({selectedInfo.called_by.length})
                   </h5>
                   {selectedInfo.called_by.length > 0 ? (
-                    <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                    <div className="space-y-1 max-h-[350px] overflow-y-auto">
                       {selectedInfo.called_by.map(callerId => {
                         const caller = callGraph[callerId];
                         return (
@@ -1035,7 +1035,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center h-[550px] bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
+            <div className="flex items-center justify-center h-[700px] bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600">
               <div className="text-center">
                 <div className="text-5xl mb-4">👈</div>
                 <p className="text-lg text-slate-600 dark:text-slate-400">
@@ -1072,53 +1072,56 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         </div>
 
         {/* Legend */}
-        <div className="bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-lg rounded-xl p-3 border border-slate-200 dark:border-slate-700 w-48">
-          <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex justify-between items-center">
+        <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur shadow-xl rounded-xl p-3 border border-slate-200 dark:border-slate-700 w-56">
+          <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex justify-between items-center border-b border-slate-100 dark:border-slate-700 pb-1">
             <span>Execution Flow</span>
             <span className="text-blue-500">START ↘</span>
           </h5>
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-[#f59e0b] flex items-center justify-center text-[10px] text-white font-bold">A</div>
-              <span className="text-xs text-slate-600 dark:text-slate-300">API Gateway</span>
+          
+          <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3.5 h-3.5 rounded bg-[#f59e0b] flex items-center justify-center text-[9px] text-white font-bold">A</div>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300 truncate">API</span>
             </div>
             
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-[#ec4899] flex items-center justify-center text-[10px] text-white font-bold">M</div>
-              <span className="text-xs text-slate-600 dark:text-slate-300">Middleware</span>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3.5 h-3.5 rounded bg-[#ec4899] flex items-center justify-center text-[9px] text-white font-bold">M</div>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300 truncate">Middleware</span>
             </div>
 
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-[#ef4444] flex items-center justify-center text-[10px] text-white font-bold">C</div>
-              <span className="text-xs text-slate-600 dark:text-slate-300">Controller</span>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3.5 h-3.5 rounded bg-[#ef4444] flex items-center justify-center text-[9px] text-white font-bold">C</div>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300 truncate">Controller</span>
             </div>
             
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-[#8b5cf6] flex items-center justify-center text-[10px] text-white font-bold">S</div>
-              <span className="text-xs text-slate-600 dark:text-slate-300">Service</span>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3.5 h-3.5 rounded bg-[#8b5cf6] flex items-center justify-center text-[9px] text-white font-bold">S</div>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300 truncate">Service</span>
             </div>
             
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-[#10b981] flex items-center justify-center text-[10px] text-white font-bold">D</div>
-              <span className="text-xs text-slate-600 dark:text-slate-300">Database</span>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3.5 h-3.5 rounded bg-[#10b981] flex items-center justify-center text-[9px] text-white font-bold">D</div>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300 truncate">Database</span>
             </div>
             
-            <div className="mt-1 flex items-center gap-2 opacity-60">
-              <span className="w-4 h-4 rounded bg-[#3b82f6] border border-white"></span>
-              <span className="text-xs text-slate-600 dark:text-slate-300">Selected</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3.5 h-3.5 rounded bg-[#3b82f6] border border-white"></span>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300">Selected</span>
             </div>
+          </div>
 
-            <div className="mt-2 border-t border-slate-100 dark:border-slate-700 pt-2 flex flex-col gap-1">
-               <div className="flex items-center gap-3">
-                  <span className="w-4 border-t border-dashed border-slate-400"></span>
-                  <span className="text-[9px] text-slate-500">HTTP/Network</span>
-               </div>
-               <div className="flex items-center gap-3">
-                  <span className="w-4 border-t border-dotted border-slate-500"></span>
-                  <span className="text-[9px] text-slate-500">DB Operation</span>
-               </div>
-               <div className="text-[9px] text-blue-500 font-medium text-right mt-1">↘ END</div>
-            </div>
+          <div className="mt-2 border-t border-slate-100 dark:border-slate-700 pt-2 grid grid-cols-1 gap-1">
+             <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 border-t border-dashed border-slate-400"></span>
+                  <span className="text-[9px] text-slate-500">Network</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3 border-t border-dotted border-slate-500"></span>
+                  <span className="text-[9px] text-slate-500">DB Op</span>
+                </div>
+             </div>
+             <div className="text-[8px] text-blue-500 font-bold text-right">↘ END</div>
           </div>
         </div>
       </div>
