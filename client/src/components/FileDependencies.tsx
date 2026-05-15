@@ -536,7 +536,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
           No dependency data available
         </p>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Analyze a repository to see file dependencies
+          Analyze a repository to see the file graph
         </p>
       </div>
     );
@@ -548,10 +548,10 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-            🔗 File Dependencies
+            🔗 File Graph
           </h3>
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            Visualize how files depend on each other
+            Visualize the file connection graph
           </p>
         </div>
 
@@ -723,10 +723,10 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
                   <div>
                     <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-2">
                       {graphMode === 'all'
-                        ? (selectedFile ? `Connections for ${getFileName(selectedFile)}` : 'All File Dependencies')
+                        ? (selectedFile ? `Connections for ${getFileName(selectedFile)}` : 'Complete File Graph')
                         : expandedFiles.size > 1
                         ? `Exploring ${expandedFiles.size} files (selected: ${getFileName(selectedFile || '')})`
-                        : `Dependencies for ${getFileName(selectedFile || '')}`}
+                        : `Connections for ${getFileName(selectedFile || '')}`}
                     </h4>
                     <p className="text-sm text-slate-600 dark:text-slate-400">
                       {graphMode === 'all' && selectedFile

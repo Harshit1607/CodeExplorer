@@ -133,6 +133,7 @@ function App() {
               onAnalysisStart={handleAnalysisStart}
               isLoading={showLoading}
               error={analysisState.error}
+              status={analysisState.status}
             />
 
             {showLoading && (

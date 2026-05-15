@@ -53,8 +53,8 @@ export default function AIReportSection({ report, isLoading }: AIReportSectionPr
           </div>
         </div>
         <div className="text-center">
-          <h3 className="text-xl font-bold text-[var(--text-primary)]">Generating AI Intelligence...</h3>
-          <p className="text-[var(--text-secondary)] mt-2">Our senior architect is reviewing the codebase structure.</p>
+          <h3 className="text-xl font-bold text-[var(--text-primary)]">Generating AI Insights...</h3>
+          <p className="text-[var(--text-secondary)] mt-2">Analyzing codebase patterns and architectural decisions...</p>
         </div>
       </div>
     );

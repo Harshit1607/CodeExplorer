@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, Fragment } from 'react';
 import OverviewSection from './OverviewSection';
 import QuickStartGuide from './QuickStartGuide';
 import ComplexityAnalysis from './ComplexityAnalysis';
@@ -39,19 +39,19 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
   }, []);
 
   const tabs = [
-    { id: 'quickstart', label: 'Quick Start', icon: '🚀' },
-    { id: 'ai', label: 'AI Intelligence', icon: '🧠' },
-    { id: 'chat', label: 'Chat', icon: '💬' },
-    { id: 'search', label: 'Search', icon: '🔍' },
-    { id: 'architecture', label: 'Architecture', icon: '🏗️' },
-    { id: 'callgraph', label: 'Call Graph', icon: '🔀' },
-    { id: 'complexity', label: 'Complexity', icon: '🎯' },
-    { id: 'overview', label: 'Overview', icon: '📊' },
-    { id: 'structure', label: 'File Structure', icon: '📁' },
-    { id: 'languages', label: 'Languages', icon: '💻' },
-    { id: 'dependencies', label: 'Dependencies', icon: '📦' },
-    { id: 'filedeps', label: 'File Dependencies', icon: '🔗' },
-    { id: 'keyfiles', label: 'Key Files', icon: '⭐' },
+    { id: 'quickstart', label: 'Quick Start', icon: 'rocket_launch' },
+    { id: 'ai', label: 'AI Insights', icon: 'auto_awesome' },
+    { id: 'chat', label: 'Chat', icon: 'forum' },
+    { id: 'callgraph', label: 'Call Graph', icon: 'hub' },
+    { id: 'filedeps', label: 'File Graph', icon: 'schema' },
+    { id: 'search', label: 'Search', icon: 'search' },
+    { id: 'architecture', label: 'Architecture', icon: 'architecture' },
+    { id: 'complexity', label: 'Complexity', icon: 'speed' },
+    { id: 'overview', label: 'Overview', icon: 'dashboard' },
+    { id: 'structure', label: 'File Structure', icon: 'folder_open' },
+    { id: 'languages', label: 'Languages', icon: 'terminal' },
+    { id: 'dependencies', label: 'Dependencies', icon: 'inventory_2' },
+    { id: 'keyfiles', label: 'Key Files', icon: 'grade' },
   ];
 
   // Reconstruct files dict from complexity fileList
@@ -74,8 +74,8 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
       {searchNavigationTarget && (
         <div className="bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-xl p-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-primary-600 dark:text-primary-400">
-              {searchNavigationTarget.type === 'file' ? '📄' : searchNavigationTarget.type === 'function' ? '⚡' : '🔷'}
+            <span className="material-symbols-outlined text-primary-600 dark:text-primary-400">
+              {searchNavigationTarget.type === 'file' ? 'description' : searchNavigationTarget.type === 'function' ? 'bolt' : 'category'}
             </span>
             <div>
               <p className="text-sm font-medium text-primary-900 dark:text-primary-100">
@@ -97,24 +97,32 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
 
       <div className="bg-[var(--bg-secondary)] rounded-xl shadow-lg border border-[var(--border-color)] overflow-hidden">
         <div className="border-b border-[var(--border-color)]">
-          <nav className="flex overflow-x-auto scrollbar-hide">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`
-                  px-5 py-3.5 text-sm font-medium whitespace-nowrap
-                  border-b-2 transition-all duration-200
-                  ${
-                    activeTab === tab.id
-                      ? 'border-primary-500 text-primary-600 dark:text-primary-400 bg-primary-50/50 dark:bg-primary-900/20'
-                      : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-                  }
-                `}
-              >
-                <span className="mr-2">{tab.icon}</span>
-                {tab.label}
-              </button>
+          <nav className="flex overflow-x-auto scrollbar-hide px-2 items-stretch">
+            {tabs.map((tab, index) => (
+              <Fragment key={tab.id}>
+                <button
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`
+                    px-6 py-4 text-sm font-medium whitespace-nowrap
+                    border-b-2 transition-all duration-200 flex items-center gap-2.5 relative
+                    ${
+                      activeTab === tab.id
+                        ? 'border-primary-900 dark:border-primary-100 text-primary-900 dark:text-primary-100 bg-primary-100/50 dark:bg-primary-800/40 font-bold'
+                        : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                    }
+                  `}
+                >
+                  <span className="material-symbols-outlined text-[22px] w-6 h-6 flex items-center justify-center">
+                    {tab.icon}
+                  </span>
+                  {tab.label}
+                </button>
+                {index < tabs.length - 1 && (
+                  <div className="flex items-center">
+                    <div className="h-[34px] w-[1px] bg-[var(--border-color)] opacity-60" />
+                  </div>
+                )}
+              </Fragment>
             ))}
           </nav>
         </div>
