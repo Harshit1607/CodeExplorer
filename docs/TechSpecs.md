@@ -40,8 +40,16 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - Framework and database detection
 - **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers.
 - **AI Analyzer**: Generates automated architectural summaries and insights using LLMs (Groq API).
-- **Semantic Search Service**: Concept-based code search using 50+ concept categories.
-- **Chat Service**: AI-powered chat about the analyzed repository with intelligent context building.
+- **Streaming Pipeline**: Clones (with live progress), analyzes files in parallel, then runs deep analysis while building the vector index concurrently. Emits batched SSE events with monotonic progress; non-fatal problems are `warning` events, only fatal failures are `error`. Sessions are kept in a TTL-evicted store so clients can reconnect (history is replayed) and search/chat can reuse server-side data.
+- **Code Chunker**: Splits source into symbol-level chunks — exact function/class/method boundaries for Python (via `ast`), definition-regex split points for other languages, overlapping windows for oversized segments.
+- **Vector Index**: Embeds chunks locally with fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, no API key) into an in-memory numpy matrix per session; brute-force cosine search. Searchable incrementally while it builds.
+- **Semantic Search Service**: Hybrid retrieval — concept-expanded keyword matching (50+ concept categories) fused with vector similarity via weighted reciprocal rank fusion. Identifier-like queries lean on keywords, natural-language queries lean on vectors; tests/examples are mildly down-ranked unless asked for. Falls back to keyword-only when no index is available.
+- **Chat Service (RAG)**: Groq-powered chat (`GROQ_MODEL`, default `openai/gpt-oss-120b`). Each question gets a compact repo overview plus code retrieved for that question by the **RAG Retriever**:
+  - explicitly named symbols (`backticks`, snake_case, camelCase, `name()`) and named files (with a symbol outline),
+  - vector similarity (follow-ups reuse the previous question),
+  - call-graph expansion for "who calls / where is X used" questions (callers' code is pulled in),
+  - a character budget, per-file caps, overlap removal and a cap on test/example chunks.
+  Answers return their sources (file + line range). Without a live index, chat falls back to whole entry/key files; without any analyzed files it refuses rather than letting the model answer from memory.
 
 ---
 
@@ -52,6 +60,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 - GitPython
 - Python `ast`
 - Groq API (LLM-powered chat)
+- fastembed + numpy (local embeddings / vector search)
 - CORS middleware
 
 **Frontend**
@@ -77,19 +86,26 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 
 ## 6. API Endpoints
 
-- `GET /api/analyze/stream` — Initiates/reconnects to a streaming analysis session. Returns a Server-Sent Event (SSE) stream broadcasting:
-  - `repo_meta`: Initial GitHub repository data
+- `GET /api/analyze/stream?repo=&session_id=` — Initiates/reconnects to a streaming analysis session (reconnecting with the same `session_id` replays history). Returns a Server-Sent Event (SSE) stream broadcasting:
+  - `clone_progress`, `repo_meta`: Clone progress and GitHub repository data
+  - `scan_started`, `file_complexity_batch`: File count, then batched file-level metrics (LOC, functions, classes, imports)
   - `file_tree`: Full repository file structure
-  - `file_complexity`: Incremental file-level metrics (LOC, functions)
   - `language_dist`: Language breakdown
+  - `key_files`: Key files and entry points
   - `framework_detected`: Frameworks, databases, and dependencies
-  - `dependency_edge`: File-level dependency graph edges
-  - `call_node` / `call_edge`: Function call graph components
+  - `file_dependencies`: File-level dependency graph (one event)
+  - `call_graph`: Function call graph (one event)
   - `architecture_ready`: ReactFlow architecture data
+  - `quickstart_ready`: README, package manager, run scripts
   - `ai_report_ready`: AI-generated architecture summary
+  - `search_index_progress` / `search_index_ready`: Vector index build status (runs concurrently)
+  - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done
+- `GET /api/analyze/{session_id}/status` — Pipeline and search-index status for a session.
 - `POST /api/analyze` — Legacy endpoint for full analysis (synchronous).
-- `POST /api/search` — Concept-based semantic search across files, functions, and classes.
-- `POST /api/chat` — AI-powered Q&A about the analyzed repository.
+- `POST /api/search` — Hybrid semantic search. Body: `query`, `session_id` (preferred), optional `mode` (`hybrid` | `semantic` | `keyword`), `limit`, and optional `analysis_data` fallback. Returns ranked results with match type, similarity, line range, and code snippet.
+- `GET /api/search/status?session_id=` — Vector index status.
+- `POST /api/chat` — Retrieval-augmented Q&A. Body: `question`, `session_id` (preferred), optional `chat_history`, optional slim `analysis_data` fallback. Returns `response`, `sources` (`file`, `start_line`, `end_line`, `symbol`, `reason`) and `retrieval` (`semantic` | `files`).
+- `GET /api/health` — Health check (reports whether vector search is enabled).
 
 ---
 
@@ -103,10 +119,10 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 ### Dashboard (Tabbed Interface — 13 Tabs)
 1. **AI Report** — Automated architecture overview, key component identification, and codebase insights generated by AI (Stage 4)
 2. **Quick Start** — Auto-generated setup and installation guide with language/framework detection, package manager suggestions, install/run commands, Docker/Makefile support, and entry point listing
-3. **Chat** — AI-powered conversational interface for asking questions about the codebase
-4. **Search** — Semantic code search with suggested searches, type filtering (files, functions, classes), and relevance scoring
+3. **Chat** — Retrieval-augmented chat with per-answer source chips (GitHub deep links to exact lines), code-block rendering, index status, suggested questions, chat history, rate-limit handling, and retry functionality
+4. **Search** — Hybrid vector + keyword code search with index build status, mode toggle (hybrid/semantic/keyword), type filtering, expandable code snippets with line numbers, and GitHub deep links
 5. **Architecture** — ReactFlow-based layered architecture diagram with 8 layer types
-6. **Call Graph** — Interactive D3.js force-directed graph showing function-to-function call relationships (streams nodes/edges in real-time)
+6. **Call Graph** — Interactive D3.js force-directed graph showing function-to-function call relationships
 7. **Complexity** — Recharts bar chart ranking files by complexity (updates incrementally during scan)
 8. **Overview** — Repository statistics and language breakdown
 9. **File Structure** — Interactive file tree display (available immediately after scan)
@@ -116,10 +132,10 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 13. **Key Files** — Highlights important files (README, LICENSE, Dockerfile, etc.)
 
 ### Real-time Progress
-- Multi-stage progress bar showing current pipeline state
-- Real-time event log showing backend actions
+- Multi-stage progress bar showing current pipeline state (monotonic)
+- Human-readable activity log (clone progress, files analyzed, chunks embedded, warnings)
 - Incremental data rendering (tabs populate as data arrives)
-- Reconnection support for interrupted streams
+- Reconnection support for interrupted streams (server replays history; client resets to avoid double counting)
 
 ### Global Search Bar
 - Searchable index across all files, functions, and classes
@@ -189,5 +205,5 @@ Python, JavaScript, TypeScript, Java, Go, Rust, Ruby, PHP, C#, Swift, Kotlin, Sc
 - One repository analyzed at a time
 - Public repositories only
 - No authentication or persistence across sessions
-- Chat context limited to 28k characters (Groq free tier)
+- Chat context budget is ~14k characters (`CHAT_CONTEXT_CHARS`) because the Groq free tier allows ~8k tokens/minute including the answer
 - Chat subject to rate limiting (Groq API)

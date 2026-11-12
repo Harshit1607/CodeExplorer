@@ -1,13 +1,24 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-from app.services.semantic_search import search_with_ai_ranking
+from typing import Any, Dict, List, Literal, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from app.services.semantic_search import files_from_analysis_data, hybrid_search
+from app.services.session_store import sessions
 
 router = APIRouter()
 
+
 class SearchRequest(BaseModel):
     query: str
-    analysis_data: dict
+    # Preferred: the streaming session id. The server then uses its own file data
+    # and the session's vector index.
+    session_id: Optional[str] = None
+    # Fallback when the session has expired: client-side analysis data (keyword search only).
+    analysis_data: Optional[dict] = None
+    mode: Literal["hybrid", "semantic", "keyword"] = "hybrid"
+    limit: int = Field(30, ge=1, le=100)
+
 
 class SearchResultItem(BaseModel):
     type: str
@@ -15,24 +26,46 @@ class SearchResultItem(BaseModel):
     file_path: str
     context: str
     score: float
+    match: str = "keyword"              # keyword | semantic | hybrid
+    keyword_score: Optional[float] = None
+    similarity: Optional[float] = None
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    snippet: Optional[str] = None
+
 
 class SearchResponse(BaseModel):
     query: str
     total_results: int
     results: List[SearchResultItem]
     grouped: Dict[str, List[SearchResultItem]]
+    mode: str
+    index: Optional[Dict[str, Any]] = None
+
 
 @router.post("/search", response_model=SearchResponse)
 def search(data: SearchRequest):
     """
-    Perform semantic search on an analyzed repository.
-
-    Search for code elements by concept (e.g., "authentication logic",
-    "database queries", "error handling").
+    Hybrid code search: concept-expanded keyword matching fused with vector similarity
+    over embedded code chunks (when the session's index is ready).
     """
-    results = search_with_ai_ranking(
-        query=data.query,
-        analysis_data=data.analysis_data,
-    )
+    pipeline = sessions.get(data.session_id)
+    if pipeline:
+        files = pipeline.analyzer.files
+        index = pipeline.vector_index
+    else:
+        files = files_from_analysis_data(data.analysis_data or {})
+        index = None
 
-    return SearchResponse(**results)
+    if not files:
+        raise HTTPException(status_code=400, detail="No analysis data available for this session. Analyze a repository first.")
+
+    return SearchResponse(**hybrid_search(data.query, files, index, limit=data.limit, mode=data.mode))
+
+
+@router.get("/search/status")
+def search_status(session_id: str):
+    pipeline = sessions.get(session_id)
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+    return pipeline.vector_index.info()

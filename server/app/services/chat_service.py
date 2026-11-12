@@ -1,367 +1,324 @@
-import os
+"""
+Repository chat.
+
+Context = compact repo overview + code relevant to the question.
+  - With a live session and vector index: retrieval-augmented (RAG) — the most relevant
+    functions/classes are selected via embeddings, symbol and file mentions.
+  - Otherwise: falls back to whole files (entry points / key files / mentioned files),
+    read from server memory when possible, else fetched from GitHub.
+"""
+import re
+from collections import Counter
+from typing import Dict, List, Optional, Tuple
+
 import requests
-from groq import Groq
 from fastapi import HTTPException
-from typing import List
+from groq import Groq
+
+from app.core import config
+from app.services.llm import completion_kwargs, groq_api_key
+from app.services.rag_retriever import RepoRetriever
+
+OVERVIEW_MAX_CHARS = 4500
+README_MAX_CHARS = 1500
+MAX_FALLBACK_FILES = 4
+HISTORY_MESSAGE_MAX_CHARS = 2000
+
+# Kept for backwards compatibility with older imports.
+MAX_CONTEXT_CHARS = config.CHAT_CONTEXT_CHARS
+
 
 def get_groq_client():
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = groq_api_key()
     if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Chat feature is not configured. GROQ_API_KEY is missing."
-        )
+        raise HTTPException(status_code=500, detail="Chat feature is not configured. GROQ_API_KEY is missing.")
     return Groq(api_key=api_key)
 
-# Maximum context size (in characters) - Groq free tier has 12k TPM limit
-# ~4 chars per token, leaving room for response = ~28k chars max
-MAX_CONTEXT_CHARS = 28000
 
+# ---------------------------------------------------------------------------
+# Normalised repo info (from a live session or from client-supplied data)
+# ---------------------------------------------------------------------------
+def _readme_text(readme) -> str:
+    if isinstance(readme, dict):
+        return readme.get("content", "") or ""
+    return readme or ""
+
+
+def _split_frameworks(frameworks) -> Tuple[List[str], List[str]]:
+    if isinstance(frameworks, dict):
+        return frameworks.get("frontend", []) or [], frameworks.get("backend", []) or []
+    return [], []
+
+
+def info_from_pipeline(pipeline) -> dict:
+    r = pipeline.results
+    frontend, backend = _split_frameworks(r.get("frameworks"))
+    return {
+        "repo_url": pipeline.repo_url,
+        "default_branch": pipeline.repo_meta.get("default_branch") or "main",
+        "description": pipeline.repo_meta.get("description"),
+        "readme": _readme_text((r.get("quickstart") or {}).get("readme")),
+        "languages": r.get("languages") or {},
+        "frontend": frontend,
+        "backend": backend,
+        "databases": r.get("databases") or [],
+        "dependencies": r.get("dependencies") or {},
+        "entry_points": r.get("entry_points") or [],
+        "key_files": r.get("key_files") or [],
+        "files": pipeline.analyzer.files,   # includes truncated `content`
+    }
+
+
+def normalize_analysis(analysis_data: dict) -> dict:
+    if not analysis_data:
+        return {}
+    if "repoMeta" in analysis_data or "complexity" in analysis_data:
+        meta = analysis_data.get("repoMeta") or {}
+        frontend, backend = _split_frameworks(analysis_data.get("frameworks"))
+        return {
+            "repo_url": meta.get("url", "Unknown"),
+            "default_branch": meta.get("default_branch") or "main",
+            "description": meta.get("description"),
+            "readme": _readme_text((analysis_data.get("quickstart") or {}).get("readme")),
+            "languages": analysis_data.get("languages") or {},
+            "frontend": frontend,
+            "backend": backend,
+            "databases": analysis_data.get("databases") or [],
+            "dependencies": analysis_data.get("dependencies") or {},
+            "entry_points": analysis_data.get("entryPoints") or [],
+            "key_files": analysis_data.get("keyFiles") or [],
+            "files": {
+                f["file"]: {"functions": f.get("functions", []), "classes": f.get("classes", []),
+                            "language": f.get("language", "")}
+                for f in (analysis_data.get("complexity") or {}).get("fileList", []) if f.get("file")
+            },
+        }
+    structure = analysis_data.get("structure_analysis", {})
+    frontend, backend = _split_frameworks(structure.get("frameworks"))
+    return {
+        "repo_url": analysis_data.get("repository_url", "Unknown"),
+        "default_branch": "main",
+        "readme": _readme_text(structure.get("readme")),
+        "languages": structure.get("languages", {}),
+        "frontend": frontend,
+        "backend": backend,
+        "databases": structure.get("databases", []),
+        "dependencies": structure.get("dependencies", {}),
+        "entry_points": structure.get("entry_points", []),
+        "key_files": structure.get("key_files", []),
+        "files": structure.get("files", {}),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Overview
+# ---------------------------------------------------------------------------
+def _clean_readme(text: str) -> str:
+    lines = [ln for ln in text.splitlines()
+             if not ln.lstrip().startswith(("[![", "<img", "<p", "</p", "<a ", "</a", "<div", "</div", "<br"))]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _directory_summary(files: Dict[str, dict], max_lines: int = 25) -> List[str]:
+    counts: Counter = Counter()
+    for path in files:
+        parts = path.split("/")
+        counts["/".join(parts[:2]) + "/" if len(parts) > 2 else (parts[0] + "/" if len(parts) > 1 else "(root)")] += 1
+    return [f"- {d} ({n} files)" for d, n in counts.most_common(max_lines)]
+
+
+def build_overview(info: dict) -> str:
+    parts = [f"# Repository: {info.get('repo_url', 'Unknown')}"]
+    if info.get("description"):
+        parts.append(info["description"])
+
+    readme = _clean_readme(info.get("readme") or "")
+    if readme:
+        parts.append(f"## README (excerpt)\n{readme[:README_MAX_CHARS]}")
+
+    langs = info.get("languages") or {}
+    if langs:
+        top = sorted(langs.items(), key=lambda kv: (kv[1] or {}).get("count", 0), reverse=True)[:6]
+        parts.append("**Languages:** " + ", ".join(f"{k} ({(v or {}).get('count', 0)} files)" for k, v in top))
+    if info.get("frontend"):
+        parts.append(f"**Frontend:** {', '.join(info['frontend'])}")
+    if info.get("backend"):
+        parts.append(f"**Backend:** {', '.join(info['backend'])}")
+    if info.get("databases"):
+        parts.append(f"**Databases:** {', '.join(info['databases'])}")
+
+    deps = info.get("dependencies") or {}
+    dep_lines = []
+    for _, sources in deps.items():
+        if isinstance(sources, dict):
+            for source, dep_list in sources.items():
+                if dep_list:
+                    dep_lines.append(f"- {source}: {', '.join(dep_list[:15])}")
+    if dep_lines:
+        parts.append("## Dependencies\n" + "\n".join(dep_lines[:8]))
+
+    if info.get("entry_points"):
+        parts.append("**Entry points:** " + ", ".join(info["entry_points"][:8]))
+    if info.get("key_files"):
+        parts.append("**Key files:** " + ", ".join(info["key_files"][:10]))
+
+    files = info.get("files") or {}
+    if files:
+        parts.append(f"## Layout ({len(files)} source files)\n" + "\n".join(_directory_summary(files)))
+
+    return "\n".join(parts)[:OVERVIEW_MAX_CHARS]
+
+
+# ---------------------------------------------------------------------------
+# Fallback code context (no vector index)
+# ---------------------------------------------------------------------------
 def extract_mentioned_files(question: str, available_files: List[str]) -> List[str]:
-    """Extract file names mentioned in the user's question."""
-    mentioned = []
-    question_lower = question.lower()
+    q = question.lower()
+    out = []
+    for path in available_files:
+        name = path.split("/")[-1].lower()
+        stem = name.rsplit(".", 1)[0]
+        if name in q or (len(stem) >= 4 and re.search(rf"\b{re.escape(stem)}\b", q)):
+            out.append(path)
+    return out
 
-    for file_path in available_files:
-        file_name = file_path.split('/')[-1].lower()
-        file_stem = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
-
-        # Check if file name or stem is mentioned
-        if file_name in question_lower or file_stem in question_lower:
-            mentioned.append(file_path)
-        # Also check for partial path matches
-        elif any(part.lower() in question_lower for part in file_path.split('/')):
-            mentioned.append(file_path)
-
-    return mentioned
 
 def prioritize_files(files: dict, key_files: List[str], entry_points: List[str], mentioned: List[str]) -> List[str]:
-    """Prioritize files for inclusion in context."""
-    priority_order = []
-    seen = set()
+    order, seen = [], set()
+    for group in (mentioned, entry_points, key_files):
+        for f in group:
+            if f in files and f not in seen:
+                order.append(f)
+                seen.add(f)
+    rest = sorted((p for p in files if p not in seen),
+                  key=lambda p: len(files[p].get("functions", [])) + 2 * len(files[p].get("classes", [])),
+                  reverse=True)
+    return order + rest
 
-    # 1. First add mentioned files (highest priority)
-    for f in mentioned:
-        if f not in seen and f in files:
-            priority_order.append(f)
-            seen.add(f)
-
-    # 2. Add entry points
-    for f in entry_points:
-        if f not in seen and f in files:
-            priority_order.append(f)
-            seen.add(f)
-
-    # 3. Add key files
-    for f in key_files:
-        if f not in seen and f in files:
-            priority_order.append(f)
-            seen.add(f)
-
-    # 4. Add remaining files sorted by importance (classes + functions count)
-    remaining = []
-    for path, info in files.items():
-        if path not in seen:
-            score = len(info.get('functions', [])) + len(info.get('classes', [])) * 2
-            remaining.append((path, score))
-
-    remaining.sort(key=lambda x: x[1], reverse=True)
-    for path, _ in remaining:
-        priority_order.append(path)
-
-    return priority_order
 
 def fetch_file_content(repo_url: str, default_branch: str, file_path: str) -> str:
-    """Fetch file content directly from GitHub."""
     if not repo_url or not repo_url.startswith("https://github.com/"):
         return ""
-        
-    parts = repo_url.rstrip('/').split('/')
-    if len(parts) < 2:
-        return ""
-        
-    owner, repo = parts[-2], parts[-1]
-    if repo.endswith('.git'):
-        repo = repo[:-4]
-        
-    branch = default_branch or "main"
-    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{file_path}"
-    
+    parts = repo_url.rstrip("/").split("/")
+    owner, repo = parts[-2], parts[-1].removesuffix(".git")
     try:
-        resp = requests.get(raw_url, timeout=5.0)
+        resp = requests.get(f"https://raw.githubusercontent.com/{owner}/{repo}/{default_branch or 'main'}/{file_path}", timeout=5.0)
         if resp.status_code == 200:
             return resp.text
     except Exception as e:
         print(f"Failed to fetch {file_path}: {e}")
-        
     return ""
 
-def build_context(analysis_data: dict, question: str = "", max_code_files: int = 6) -> str:
-    """Build a comprehensive context string including actual code for the LLM."""
-    if not analysis_data:
-        return "No analysis data available. The user should analyze the repository first."
 
-    context_parts = []
-    current_size = 0
-
-    # Determine format (streaming vs old)
-    is_streaming = isinstance(analysis_data, dict) and "repoMeta" in analysis_data
-    
-    if is_streaming:
-        repo_meta = analysis_data.get("repoMeta") or {}
-        repo_url = repo_meta.get("url", "Unknown")
-        default_branch = repo_meta.get("default_branch", "main")
-        
-        quickstart = analysis_data.get("quickstart") or {}
-        readme_raw = quickstart.get("readme", "")
-        # readme can be a dict {content, filename} or a plain string
-        if isinstance(readme_raw, dict):
-            readme = readme_raw.get("content", "")
-        else:
-            readme = readme_raw or ""
-        
-        languages = analysis_data.get("languages") or {}
-        frameworks_dict = analysis_data.get("frameworks") or {}
-        frontend = frameworks_dict.get("frontend", []) if isinstance(frameworks_dict, dict) else []
-        backend = frameworks_dict.get("backend", []) if isinstance(frameworks_dict, dict) else []
-        databases = analysis_data.get("databases") or []
-        entry_points = analysis_data.get("entryPoints") or []
-        key_files = analysis_data.get("keyFiles") or []
-        dependencies = analysis_data.get("dependencies") or {}
-        
-        # files mapping
-        files = {}
-        complexity = analysis_data.get("complexity") or {}
-        for f in complexity.get("fileList", []):
-            files[f["file"]] = {
-                "functions": f.get("functions", []),
-                "classes": f.get("classes", [])
-            }
-    else:
-        structure = analysis_data.get("structure_analysis", {})
-        repo_url = analysis_data.get("repository_url", "Unknown")
-        default_branch = "main"
-        readme = structure.get("readme", {}).get("content", "")
-        languages = structure.get("languages", {})
-        frameworks_dict = structure.get("frameworks", {})
-        frontend = frameworks_dict.get("frontend", []) if isinstance(frameworks_dict, dict) else []
-        backend = frameworks_dict.get("backend", []) if isinstance(frameworks_dict, dict) else []
-        databases = structure.get("databases", [])
-        entry_points = structure.get("entry_points", [])
-        key_files = structure.get("key_files", [])
-        dependencies = structure.get("dependencies", {})
-        files = structure.get("files", {})
-
-    # Repository overview
-    context_parts.append(f"# Repository: {repo_url}\n")
-
-    # README content (very important for understanding the project)
-    if readme and isinstance(readme, str):
-        readme_content = readme[:5000]  # Limit README size
-        context_parts.append(f"## README\n```\n{readme_content}\n```\n")
-
-    # Languages
-    if languages:
-        lang_summary = ", ".join([f"{lang} ({info.get('count', 0)} files)" for lang, info in languages.items()])
-        context_parts.append(f"## Languages\n{lang_summary}\n")
-
-    # Frameworks
-    if frontend or backend:
-        if frontend:
-            context_parts.append(f"**Frontend:** {', '.join(frontend)}")
-        if backend:
-            context_parts.append(f"**Backend:** {', '.join(backend)}")
-        context_parts.append("")
-
-    # Databases
-    if databases:
-        context_parts.append(f"**Databases:** {', '.join(databases)}\n")
-
-    # Dependencies summary
-    if dependencies:
-        context_parts.append("## Dependencies")
-        for dep_type, deps in dependencies.items():
-            if isinstance(deps, dict) and deps:
-                for source, dep_list in deps.items():
-                    if dep_list:
-                        context_parts.append(f"**{source}:** {', '.join(dep_list[:20])}")
-        context_parts.append("")
-
-    if not files:
-        return "\n".join(context_parts)
-
-    # Determine which files to include with full code
-    mentioned_files = extract_mentioned_files(question, list(files.keys()))
-    prioritized = prioritize_files(files, key_files, entry_points, mentioned_files)
-
-    # Calculate current context size
-    current_size = sum(len(p) for p in context_parts)
-
-    # Add file structure overview first
-    context_parts.append("## File Structure Overview")
-    for file_path, info in list(files.items())[:50]:  # Show up to 50 files
-        functions = info.get("functions", [])
-        classes = info.get("classes", [])
-        summary = []
-        if classes:
-            summary.append(f"classes: {', '.join(classes[:5])}")
-        if functions:
-            summary.append(f"functions: {', '.join(functions[:8])}")
-        if summary:
-            context_parts.append(f"- **{file_path}**: {'; '.join(summary)}")
-        else:
-            context_parts.append(f"- {file_path}")
-
-    if len(files) > 50:
-        context_parts.append(f"- ... and {len(files) - 50} more files")
-    context_parts.append("")
-
-    # Now include actual source code for prioritized files
-    context_parts.append("## Source Code\n")
-
-    files_included = 0
-    for file_path in prioritized:
-        if files_included >= max_code_files:
+def build_fallback_code(info: dict, question: str, budget: int) -> Tuple[str, List[dict]]:
+    files = info.get("files") or {}
+    mentioned = extract_mentioned_files(question, list(files))
+    out, sources, used = [], [], 0
+    for path in prioritize_files(files, info.get("key_files", []), info.get("entry_points", []), mentioned):
+        if len(sources) >= MAX_FALLBACK_FILES or budget - used < 600:
             break
-
-        info = files.get(file_path, {})
-        content = info.get("content", "")
-        
-        if not content and is_streaming:
-            content = fetch_file_content(repo_url, default_branch, file_path)
-
+        content = files[path].get("content") or fetch_file_content(info.get("repo_url"), info.get("default_branch"), path)
         if not content:
             continue
+        room = budget - used - 100
+        if len(content) > room:
+            content = content[:room] + "\n... [truncated]"
+        block = f"### {path}\n```\n{content}\n```\n"
+        out.append(block)
+        used += len(block)
+        sources.append({"file": path, "start_line": 1, "end_line": content.count("\n") + 1,
+                        "symbol": None, "reason": "file"})
+    return "\n".join(out), sources
 
-        # Check if we have room for this file
-        file_header = f"### {file_path}\n"
-        language = info.get('language', '').lower().split()[0] if info.get('language') else ''
-        file_block = f"```{language}\n{content}\n```\n\n"
 
-        new_size = current_size + len(file_header) + len(file_block)
-        if new_size > MAX_CONTEXT_CHARS:
-            # Try with truncated content
-            max_content = MAX_CONTEXT_CHARS - current_size - len(file_header) - 100
-            if max_content > 500:  # Only include if we can show at least 500 chars
-                truncated = content[:max_content] + "\n... [truncated]"
-                file_block = f"```{language}\n{truncated}\n```\n\n"
-                context_parts.append(file_header)
-                context_parts.append(file_block)
-                files_included += 1
-            break
+# ---------------------------------------------------------------------------
+# Context assembly
+# ---------------------------------------------------------------------------
+def build_chat_context(question: str, history: Optional[List[dict]], analysis_data: Optional[dict],
+                       pipeline=None) -> Tuple[str, List[dict], str]:
+    """Returns (context, sources, retrieval_mode)."""
+    info = info_from_pipeline(pipeline) if pipeline else normalize_analysis(analysis_data or {})
+    if not info or not info.get("files"):
+        # Without real repository data the model would answer from memory and invent code.
+        raise HTTPException(status_code=400, detail="No analyzed source files are available for this repository yet. "
+                                                    "Wait for the analysis to finish (or re-run it) and try again.")
 
-        context_parts.append(file_header)
-        context_parts.append(file_block)
-        current_size = new_size
-        files_included += 1
+    overview = build_overview(info)
+    code_budget = max(2000, config.CHAT_CONTEXT_CHARS - len(overview))
 
-    if files_included < len(prioritized):
-        remaining = len(prioritized) - files_included
-        context_parts.append(f"*({remaining} more files not shown due to context limits)*\n")
+    retriever = RepoRetriever(pipeline.vector_index, pipeline.results.get("call_graph"), pipeline.analyzer.files) if pipeline else None
+    if retriever and retriever.available:
+        code, sources = retriever.retrieve(question, history, code_budget)
+        mode = "semantic"
+    else:
+        code, sources = build_fallback_code(info, question, code_budget)
+        mode = "files"
 
-    return "\n".join(context_parts)
+    context = overview
+    if code:
+        heading = ("## Relevant code (retrieved for this question; excerpts, not whole files)"
+                   if mode == "semantic" else "## Source code (selected files)")
+        context += f"\n\n{heading}\n\n{code}"
+    return context, sources, mode
 
-def chat_about_repo(question: str, analysis_data: dict, chat_history: list = None) -> str:
-    """Chat with the LLM about the repository."""
-    client = get_groq_client()
 
-    # Build context from analysis, including the question for better file prioritization
-    context = build_context(analysis_data, question=question)
+def build_context(analysis_data: dict, question: str = "", max_code_files: int = MAX_FALLBACK_FILES) -> str:
+    """Backward-compatible helper (no session)."""
+    return build_chat_context(question, None, analysis_data)[0]
 
-    # System prompt
-    system_prompt = f"""You are an expert code analyst helping users understand a GitHub repository. You have access to the repository's actual source code, structure, and documentation.
+
+SYSTEM_PROMPT = """You are an expert code analyst helping a developer understand a GitHub repository.
 
 {context}
 
-## Your Capabilities
-- You can see and analyze the actual source code of key files in this repository
-- You understand the project structure, frameworks, and dependencies
-- You can explain how specific functions, classes, and modules work
-- You can answer questions about syntax, implementation details, and code patterns
-- You can trace how different parts of the code interact with each other
+## How to answer
+- Ground every claim in the overview and code above. Cite locations as `path:line` (line numbers are given in each excerpt header).
+- Only quote code that appears above, verbatim. Never invent, reconstruct or "simplify" code and present it as the repository's code. If you must sketch something, label it clearly as illustrative.
+- Quote short code snippets when they make the explanation clearer.
+- Explain how pieces connect (callers/callees are listed under excerpt headers when known).
+- The code shown was selected for this question and may be partial. If something you need is not shown, say which file or symbol is missing instead of guessing; the user can ask about it by name.
+- Be concise and use Markdown."""
 
-## Guidelines
-1. **Be specific**: Reference exact file names, function names, and line-level details when relevant
-2. **Show code snippets**: When explaining code, quote relevant portions to illustrate your points
-3. **Explain the "why"**: Don't just describe what code does, explain design decisions when apparent
-4. **Be honest about limitations**: If a file's content wasn't included or was truncated, say so
-5. **Connect the dots**: Help users understand how different parts of the codebase work together
-6. **Answer authoritatively**: You have the actual code - use it to give definitive answers, not guesses
 
-If a user asks about a specific file that isn't shown in the source code section above, let them know that file's content wasn't included in the current context, but offer to describe what you can infer from the file structure and imports.
-"""
+def chat_about_repo(question: str, analysis_data: Optional[dict], chat_history: Optional[list] = None,
+                    pipeline=None) -> dict:
+    client = get_groq_client()
+    history = (chat_history or [])[-config.CHAT_HISTORY_MESSAGES:]
+    context, sources, mode = build_chat_context(question, history, analysis_data, pipeline)
 
-    # Build messages
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # Add chat history if provided
-    if chat_history:
-        for msg in chat_history[-10:]:  # Limit to last 10 messages
-            messages.append({
-                "role": msg.get("role", "user"),
-                "content": msg.get("content", "")
-            })
-
-    # Add current question
+    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(context=context)}]
+    for msg in history:
+        messages.append({"role": msg.get("role", "user"), "content": (msg.get("content") or "")[:HISTORY_MESSAGE_MAX_CHARS]})
     messages.append({"role": "user", "content": question})
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=2048,
-        )
-        return response.choices[0].message.content
+        response = client.chat.completions.create(messages=messages, **completion_kwargs(config.CHAT_MAX_TOKENS, 0.3))
+        answer = (response.choices[0].message.content or "").strip()
+        if not answer:
+            raise HTTPException(status_code=503, detail="The AI returned an empty answer. Please try again.")
+        return {"response": answer, "sources": sources, "retrieval": mode}
+    except HTTPException:
+        raise
     except Exception as e:
-        error_msg = str(e)
-        error_lower = error_msg.lower()
+        raise _map_llm_error(e)
 
-        # Log the actual error for debugging
-        print(f"Chat API Error: {error_msg}")
 
-        # Check for specific Groq error attributes first
-        status_code = getattr(e, 'status_code', None)
+def _map_llm_error(e: Exception) -> HTTPException:
+    error_msg = str(e)
+    low = error_msg.lower()
+    print(f"Chat API Error: {error_msg}")
+    status = getattr(e, "status_code", None)
 
-        # Request too large (413) - context exceeds token limit
-        if status_code == 413 or "request too large" in error_lower or "reduce your message size" in error_lower:
-            raise HTTPException(
-                status_code=400,
-                detail="The repository context is too large. Try asking about specific files."
-            )
-        # Rate limit error - too many requests
-        elif status_code == 429 or ("rate_limit" in error_lower and "request too large" not in error_lower):
-            raise HTTPException(
-                status_code=429,
-                detail="Rate limit reached. Please wait a moment and try again."
-            )
-        # API key issues
-        elif status_code == 401 or "invalid_api_key" in error_lower or "invalid api key" in error_lower:
-            raise HTTPException(
-                status_code=401,
-                detail="AI service authentication failed. Please check the API key."
-            )
-        # Model not available
-        elif "model_not_found" in error_lower or "model not found" in error_lower or "does not exist" in error_lower:
-            raise HTTPException(
-                status_code=503,
-                detail="AI model temporarily unavailable. Please try again later."
-            )
-        # Context too long - be more specific
-        elif "context_length_exceeded" in error_lower or "maximum context length" in error_lower or "too many tokens" in error_lower:
-            raise HTTPException(
-                status_code=400,
-                detail="The repository is too large to analyze in chat. Try asking about specific files."
-            )
-        # Service unavailable
-        elif status_code == 503 or "service_unavailable" in error_lower or "service unavailable" in error_lower:
-            raise HTTPException(
-                status_code=503,
-                detail="AI service is temporarily unavailable. Please try again later."
-            )
-        # Generic error - include actual message for debugging
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Chat failed: {error_msg[:200]}"
-            )
+    if status == 413 or "request too large" in low or "reduce your message size" in low:
+        return HTTPException(400, "The question context is too large for the AI's rate limit. Try a more specific question.")
+    if status == 429 or "rate_limit" in low:
+        return HTTPException(429, "Rate limit reached. Please wait a moment and try again.")
+    if status == 401 or "invalid_api_key" in low or "invalid api key" in low:
+        return HTTPException(401, "AI service authentication failed. Please check the API key.")
+    if "model_not_found" in low or "does not exist" in low:
+        return HTTPException(503, f"AI model '{config.GROQ_MODEL}' is unavailable. Set GROQ_MODEL to a model your key can access.")
+    if "context_length_exceeded" in low or "maximum context length" in low:
+        return HTTPException(400, "The question context is too long. Try asking about specific files.")
+    if status == 503 or "service unavailable" in low:
+        return HTTPException(503, "AI service is temporarily unavailable. Please try again later.")
+    return HTTPException(500, f"Chat failed: {error_msg[:200]}")
