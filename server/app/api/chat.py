@@ -3,6 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.core.rate_limit import rate_limit
 from app.services.chat_service import chat_about_repo
 from app.services.session_store import sessions
 
@@ -37,7 +38,7 @@ class ChatResponse(BaseModel):
     retrieval: str = "none"   # semantic | files | none
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse, dependencies=[rate_limit("chat")])
 def chat(data: ChatRequest):
     """Chat about an analyzed repository (retrieval-augmented when a session index exists)."""
     if not data.question.strip():

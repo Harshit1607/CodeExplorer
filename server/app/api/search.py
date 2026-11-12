@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.rate_limit import rate_limit
 from app.services.semantic_search import files_from_analysis_data, hybrid_search
 from app.services.session_store import sessions
 
@@ -43,7 +44,7 @@ class SearchResponse(BaseModel):
     index: Optional[Dict[str, Any]] = None
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=SearchResponse, dependencies=[rate_limit("search")])
 def search(data: SearchRequest):
     """
     Hybrid code search: concept-expanded keyword matching fused with vector similarity

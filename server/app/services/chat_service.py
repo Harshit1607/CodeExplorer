@@ -312,7 +312,15 @@ def _map_llm_error(e: Exception) -> HTTPException:
     if status == 413 or "request too large" in low or "reduce your message size" in low:
         return HTTPException(400, "The question context is too large for the AI's rate limit. Try a more specific question.")
     if status == 429 or "rate_limit" in low:
-        return HTTPException(429, "Rate limit reached. Please wait a moment and try again.")
+        # Upstream (Groq) quota is shared by every user of this server; pass its back-off through.
+        retry_after = None
+        try:
+            retry_after = int(float(e.response.headers.get("retry-after")))  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        headers = {"Retry-After": str(max(1, retry_after))} if retry_after else None
+        wait = f" Please try again in {retry_after}s." if retry_after else " Please wait a moment and try again."
+        return HTTPException(429, "The AI service's rate limit was reached." + wait, headers=headers)
     if status == 401 or "invalid_api_key" in low or "invalid api key" in low:
         return HTTPException(401, "AI service authentication failed. Please check the API key.")
     if "model_not_found" in low or "does not exist" in low:

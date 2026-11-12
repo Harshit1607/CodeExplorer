@@ -36,6 +36,7 @@ app.add_middleware(
     allow_credentials=False, # Temporarily disable for maximum compatibility
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],  # lets the browser read 429 back-off times
 )
 
 app.include_router(analyze_router, prefix="/api")

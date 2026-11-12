@@ -23,6 +23,15 @@ ANALYSIS_WORKERS = _int("ANALYSIS_WORKERS", 8)
 SCAN_BATCH_SIZE = _int("SCAN_BATCH_SIZE", 64)          # files per file_complexity_batch event
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") or None        # optional: raises GitHub API rate limit
 
+# --- Rate limiting (per client, in-memory) --------------------------------
+# Format: "N/unit" joined with ";" (unit: s|min|minute|h|hour|d|day, e.g. "5/10min"). "off" disables a rule.
+RATE_LIMIT_ENABLED = _bool("RATE_LIMIT_ENABLED", True)
+RATE_LIMIT_ANALYZE = os.getenv("RATE_LIMIT_ANALYZE", "3/minute;20/hour")   # new analyses only (reconnects are free)
+RATE_LIMIT_CHAT = os.getenv("RATE_LIMIT_CHAT", "6/minute;100/day")         # Groq free tier: 1000 requests/day shared
+RATE_LIMIT_SEARCH = os.getenv("RATE_LIMIT_SEARCH", "60/minute")
+RATE_LIMIT_PROXY_HOPS = _int("RATE_LIMIT_PROXY_HOPS", 0)   # trusted reverse proxies in front of the server
+MAX_CONCURRENT_ANALYSES = _int("MAX_CONCURRENT_ANALYSES", 3)  # global; each clones + embeds on the CPU
+
 # --- Sessions -------------------------------------------------------------
 SESSION_TTL_SECONDS = _int("SESSION_TTL_SECONDS", 60 * 60)  # keep finished sessions for 1h
 MAX_SESSIONS = _int("MAX_SESSIONS", 20)

@@ -6,7 +6,9 @@ from pydantic import BaseModel
 from app.services.repo_ingestor import clone_repo
 from app.services.repo_scanner import scan_repo
 from app.services.code_analyzer import CodeAnalyzer
-from app.services.streaming_pipeline import StreamingPipeline, HEARTBEAT
+from app.core import config
+from app.core.rate_limit import check as rate_check, rate_limit, too_many_message
+from app.services.streaming_pipeline import StreamingPipeline, HEARTBEAT, format_sse
 from app.services.session_store import sessions
 from app.services.fs_utils import remove_tree
 
@@ -19,6 +21,22 @@ class RepoRequest(BaseModel):
     repo_url: str
 
 
+def _rejected_stream(message: str, retry_after: int) -> StreamingResponse:
+    """
+    EventSource can't read the body/status of a non-200 response (it just reports a
+    generic error), so rejections are sent as a single fatal SSE `error` event.
+    """
+    event = format_sse("error", "Pipeline", 0, {
+        "message": message, "fatal": True, "rate_limited": True, "retry_after": retry_after,
+    })
+
+    async def gen():
+        yield event
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Retry-After": str(retry_after)})
+
+
 @router.get("/analyze/stream")
 async def analyze_stream(repo: str, request: Request, session_id: str = None):
     if not repo or not repo.startswith("https://github.com/"):
@@ -29,8 +47,16 @@ async def analyze_stream(repo: str, request: Request, session_id: str = None):
         pipeline = None  # session id reused for a different repo
 
     if pipeline:
+        # Reconnects (EventSource retries automatically) never count against limits.
         print(f"Reconnecting to session: {pipeline.repo_id}")
     else:
+        # Check global capacity first so a "busy" rejection doesn't use up the client's quota.
+        if sessions.active_count() >= config.MAX_CONCURRENT_ANALYSES:
+            return _rejected_stream("The server is busy analyzing other repositories. Please try again in a minute.", 30)
+        retry_after = rate_check("analyze", request)
+        if retry_after is not None:
+            return _rejected_stream(too_many_message("analyze", retry_after), retry_after)
+
         session_id = session_id or str(uuid.uuid4())
         pipeline = StreamingPipeline(repo, session_id)
         sessions.add(session_id, pipeline)
@@ -86,7 +112,7 @@ def analyze_status(session_id: str):
     }
 
 
-@router.post("/analyze")
+@router.post("/analyze", dependencies=[rate_limit("analyze")])
 def analyze_repo(data: RepoRequest):
     """
     Clone and fully analyze a GitHub repository (non-streaming).

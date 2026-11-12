@@ -124,13 +124,15 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
     const detail = err.response?.data?.detail || '';
 
     switch (status) {
-      case 429:
+      case 429: {
+        const retryAfter = parseInt(err.response?.headers?.['retry-after'] ?? '', 10);
         return {
-          message: 'Rate limit reached. Please wait before sending another message.',
+          message: detail || 'Rate limit reached. Please wait before sending another message.',
           type: 'rate_limit',
           canRetry: true,
-          retryAfter: 30,
+          retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 300) : 30,
         };
+      }
       case 401:
         return {
           message: 'AI service authentication failed. Please contact support.',

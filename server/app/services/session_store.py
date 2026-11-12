@@ -45,6 +45,10 @@ class SessionStore:
         for _, sid in finished[:len(self._sessions) - self.max_sessions]:
             self._sessions.pop(sid, None)
 
+    def active_count(self) -> int:
+        """Analyses still running (cloning / scanning / indexing)."""
+        return sum(1 for p in self._sessions.values() if not p.is_done)
+
     def __len__(self) -> int:
         return len(self._sessions)
 

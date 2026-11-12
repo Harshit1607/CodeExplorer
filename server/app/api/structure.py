@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
+from app.core.rate_limit import rate_limit
 from app.services.code_analyzer import CodeAnalyzer
 
 router = APIRouter()
@@ -8,7 +9,7 @@ router = APIRouter()
 class StructureRequest(BaseModel):
     repo_path: str
 
-@router.post("/structure")
+@router.post("/structure", dependencies=[rate_limit("analyze")])
 def get_repository_structure(data: StructureRequest):
     """
     Analyze repository structure and return detailed metadata.
@@ -39,7 +40,7 @@ def get_repository_structure(data: StructureRequest):
         "analysis": structure
     }
 
-@router.get("/structure/{repo_id}")
+@router.get("/structure/{repo_id}", dependencies=[rate_limit("analyze")])
 def get_structure_by_id(repo_id: str):
     """
     Get repository structure by repository ID (from workspace).

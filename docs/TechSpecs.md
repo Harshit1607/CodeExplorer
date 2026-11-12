@@ -190,7 +190,25 @@ Python, JavaScript, TypeScript, Java, Go, Rust, Ruby, PHP, C#, Swift, Kotlin, Sc
 
 ---
 
-## 9. Non-Functional Requirements
+## 9. Rate Limiting & Abuse Protection
+
+Per-client sliding-window limits (in-memory, `app/core/rate_limit.py`), configured with `"N/unit"` rules joined by `;`:
+
+| Rule | Default | Applies to |
+|------|---------|------------|
+| `RATE_LIMIT_ANALYZE` | `3/minute;20/hour` | Starting a **new** analysis (`/api/analyze/stream`, `POST /api/analyze`, `/api/structure`). Reconnecting to an existing session is free. |
+| `RATE_LIMIT_CHAT` | `6/minute;100/day` | `POST /api/chat` (the Groq free tier allows 1000 requests/day for the whole server) |
+| `RATE_LIMIT_SEARCH` | `60/minute` | `POST /api/search` |
+| `MAX_CONCURRENT_ANALYSES` | `3` | Global cap on running analyses (clone + CPU embedding). Checked before the per-client limit, so a "busy" rejection costs no quota. |
+
+- JSON endpoints return **429** with a `Retry-After` header (exposed via CORS). Upstream Groq 429s pass Groq's own `retry-after` through.
+- The SSE endpoint returns a single fatal `error` event (`rate_limited: true`, `retry_after`), because `EventSource` cannot read non-200 responses.
+- Client identity is the socket address. Behind reverse proxies set `RATE_LIMIT_PROXY_HOPS=N` (the client is taken from the N-th `X-Forwarded-For` entry from the right; left-most entries are spoofable), or run uvicorn with `--forwarded-allow-ips`.
+- Limits live in process memory: run a single worker (sessions and vector indexes are in-memory too). `RATE_LIMIT_ENABLED=false` disables limiting.
+
+---
+
+## 10. Non-Functional Requirements
 
 - Free to build and host
 - Deterministic and reproducible results
@@ -200,10 +218,10 @@ Python, JavaScript, TypeScript, Java, Go, Rust, Ruby, PHP, C#, Swift, Kotlin, Sc
 
 ---
 
-## 10. Limitations
+## 11. Limitations
 
 - One repository analyzed at a time
 - Public repositories only
 - No authentication or persistence across sessions
 - Chat context budget is ~14k characters (`CHAT_CONTEXT_CHARS`) because the Groq free tier allows ~8k tokens/minute including the answer
-- Chat subject to rate limiting (Groq API)
+- Chat subject to rate limiting (per-client limits and the shared Groq API quota)
