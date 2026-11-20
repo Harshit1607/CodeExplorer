@@ -17,6 +17,9 @@ interface DependencyGraphProps {
   dependencies: {
     python?: { [key: string]: string[] };
     javascript?: { [key: string]: string[] };
+    java?: { [key: string]: string[] };
+    rust?: { [key: string]: string[] };
+    cpp?: { [key: string]: string[] };
     other?: { [key: string]: string[] };
   };
 }
@@ -121,6 +124,9 @@ export default function DependencyGraph({ dependencies }: DependencyGraphProps) 
       .attr('fill', (d) => {
         if (d.type === 'python') return '#3572A5';
         if (d.type === 'javascript') return '#f1e05a';
+        if (d.type === 'java') return '#b07219';
+        if (d.type === 'rust') return '#dea584';
+        if (d.type === 'cpp') return '#f34b7d';
         if (d.type === 'package') return '#8b5cf6';
         return '#64748b';
       })

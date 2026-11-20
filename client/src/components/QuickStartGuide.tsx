@@ -1,3 +1,64 @@
+export interface BuildSystem {
+  ecosystem: string;
+  tool: string;
+  root: string;
+  setup: string[] | null;
+  install: string[] | null;
+  build: string[] | null;
+  run: string[] | null;
+  test: string[] | null;
+  notes: string[];
+}
+
+const ECOSYSTEM_ICONS: { [key: string]: string } = {
+  'JavaScript/TypeScript': '🟨', Python: '🐍', Rust: '🦀', Java: '☕', 'Java/Kotlin': '☕', 'C/C++': '⚙️', Go: '🐹',
+};
+
+const PHASES: { key: keyof BuildSystem; label: string }[] = [
+  { key: 'setup', label: 'Set up environment' },
+  { key: 'install', label: 'Install dependencies' },
+  { key: 'build', label: 'Build' },
+  { key: 'run', label: 'Run' },
+  { key: 'test', label: 'Test' },
+];
+
+function BuildSystemCard({ system, hasEnvExample }: { system: BuildSystem; hasEnvExample: boolean }) {
+  const steps: { label: string; commands: string[] }[] = [];
+  if (system.root !== '.') steps.push({ label: 'Go to the project directory', commands: [`cd ${system.root}`] });
+  if (hasEnvExample && system.root === '.') steps.push({ label: 'Configure environment', commands: ['cp .env.example .env  # then edit .env'] });
+  for (const { key, label } of PHASES) {
+    const cmds = system[key] as string[] | null;
+    if (cmds && cmds.length) steps.push({ label, commands: cmds });
+  }
+  return (
+    <div className="p-4 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-xl">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <span>{ECOSYSTEM_ICONS[system.ecosystem] || '📦'}</span>
+        <span className="font-medium text-[var(--text-primary)]">{system.ecosystem}</span>
+        <span className="text-xs px-2 py-0.5 rounded bg-primary-100 dark:bg-primary-900/40 text-primary-700 dark:text-primary-300 font-mono">{system.tool}</span>
+        {system.root !== '.' && (
+          <span className="text-xs px-2 py-0.5 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] font-mono">{system.root}/</span>
+        )}
+      </div>
+      <ol className="space-y-2">
+        {steps.map((step, i) => (
+          <li key={i}>
+            <p className="text-sm font-medium text-[var(--text-primary)] mb-1">{i + 1}. {step.label}</p>
+            {step.commands.map((cmd, j) => (
+              <code key={j} className="block bg-[#0F172A] text-accent-green px-3 py-2 rounded-lg text-sm font-mono mb-1 overflow-x-auto whitespace-pre">
+                {cmd}
+              </code>
+            ))}
+          </li>
+        ))}
+      </ol>
+      {system.notes?.map((note, i) => (
+        <p key={i} className="text-xs text-[var(--text-muted)] mt-2">ℹ️ {note}</p>
+      ))}
+    </div>
+  );
+}
+
 interface QuickStartGuideProps {
   entryPoints: string[];
   keyFiles: string[];
@@ -8,6 +69,7 @@ interface QuickStartGuideProps {
   readme?: { content: string };
   packageManager?: string;
   runScripts?: { [key: string]: string };
+  buildSystems?: BuildSystem[];
 }
 
 export default function QuickStartGuide({
@@ -19,7 +81,9 @@ export default function QuickStartGuide({
   databases,
   packageManager: detectedPM,
   runScripts,
+  buildSystems,
 }: QuickStartGuideProps) {
+  const systems = buildSystems || [];
   // Categorize languages into frontend and backend
   const FRONTEND_LANGUAGES = new Set([
     'JavaScript', 'JavaScript (React)', 'TypeScript', 'TypeScript (React)',
@@ -52,9 +116,10 @@ export default function QuickStartGuide({
   const hasPkgJson = dependencies?.javascript && Object.keys(dependencies.javascript).length > 0;
   const hasRequirements = dependencies?.python && Object.keys(dependencies.python).length > 0;
   const hasGoMod = dependencies?.other?.['go.mod'];
-  const hasCargo = dependencies?.other?.['Cargo.toml'];
-  const hasPipfile = dependencies?.other?.['Pipfile'];
-  const hasPoetry = dependencies?.other?.['pyproject.toml'];
+  const pythonKeys = Object.keys(dependencies?.python || {});
+  const hasCargo = Object.keys(dependencies?.rust || {}).length > 0 || dependencies?.other?.['Cargo.toml'];
+  const hasPipfile = pythonKeys.some(k => k.endsWith('Pipfile'));
+  const hasPoetry = pythonKeys.some(k => k.includes('(poetry)'));
 
   // Detect tooling
   const hasDocker = keyFiles.some(f => f.toLowerCase().includes('dockerfile') || f.toLowerCase().includes('docker-compose'));
@@ -196,10 +261,10 @@ export default function QuickStartGuide({
               {isMonorepo ? 'Monorepo' : isFullStack ? 'Full Stack' : frontendFrameworks.length > 0 ? 'Frontend' : backendFrameworks.length > 0 ? 'Backend' : 'Project'}
             </p>
           </div>
-          {hasPkgJson && (
+          {(systems[0] || hasPkgJson) && (
             <div>
-              <p className="text-sm text-[var(--text-secondary)]">Package Manager</p>
-              <p className="text-lg font-semibold text-[var(--text-primary)]">{packageManager}</p>
+              <p className="text-sm text-[var(--text-secondary)]">{systems[0] ? 'Build Tool' : 'Package Manager'}</p>
+              <p className="text-lg font-semibold text-[var(--text-primary)]">{systems[0]?.tool || packageManager}</p>
             </div>
           )}
           {databases && databases.length > 0 && (
@@ -279,8 +344,20 @@ export default function QuickStartGuide({
             </div>
           )}
 
-          {/* Standard install/run */}
-          {(installCommand || runCommand) && (
+          {/* Commands derived from the project's manifests */}
+          {systems.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs text-[var(--text-muted)]">
+                Derived from the project's build files (lockfiles, wrappers, scripts and build targets).
+              </p>
+              {systems.map((system, idx) => (
+                <BuildSystemCard key={`${system.ecosystem}-${system.root}-${idx}`} system={system} hasEnvExample={hasEnvExample} />
+              ))}
+            </div>
+          )}
+
+          {/* Standard install/run (fallback guesses) */}
+          {systems.length === 0 && (installCommand || runCommand) && (
             <div className="space-y-3">
               {hasEnvExample && (
                 <div>
@@ -349,7 +426,7 @@ export default function QuickStartGuide({
           )}
 
           {/* No commands detected */}
-          {!installCommand && !runCommand && !hasDockerCompose && !hasMakefile && (
+          {systems.length === 0 && !installCommand && !runCommand && !hasDockerCompose && !hasMakefile && (
             <div className="text-center py-6 text-[var(--text-secondary)]">
               <p>Unable to determine setup commands automatically.</p>
               <p className="text-sm mt-1">Please check the repository's README or documentation.</p>

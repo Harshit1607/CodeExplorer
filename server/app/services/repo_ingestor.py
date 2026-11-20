@@ -1,7 +1,7 @@
 import os
 import re
 import uuid
-import shutil
+from app.services.fs_utils import remove_tree
 from git import Repo, GitCommandError
 from fastapi import HTTPException
 
@@ -43,7 +43,7 @@ def clone_repo(repo_url: str) -> str:
     except GitCommandError as e:
         # Cleanup partial clone
         if os.path.exists(repo_path):
-            shutil.rmtree(repo_path, ignore_errors=True)
+            remove_tree(repo_path)
 
         error_msg = str(e).lower()
 

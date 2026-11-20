@@ -5,6 +5,9 @@ interface DependenciesSectionProps {
   dependencies: {
     python?: { [key: string]: string[] };
     javascript?: { [key: string]: string[] };
+    java?: { [key: string]: string[] };
+    rust?: { [key: string]: string[] };
+    cpp?: { [key: string]: string[] };
     other?: { [key: string]: string[] };
   };
 }
@@ -61,10 +64,9 @@ export default function DependenciesSection({ dependencies }: DependenciesSectio
     );
   };
 
-  const hasAnyDependencies =
-    (dependencies.python && Object.keys(dependencies.python).length > 0 && Object.values(dependencies.python).some(arr => arr.length > 0)) ||
-    (dependencies.javascript && Object.keys(dependencies.javascript).length > 0 && Object.values(dependencies.javascript).some(arr => arr.length > 0)) ||
-    (dependencies.other && Object.keys(dependencies.other).length > 0 && Object.values(dependencies.other).some(arr => arr.length > 0));
+  const hasAnyDependencies = Object.values(dependencies).some(
+    group => group && Object.values(group).some(arr => arr && arr.length > 0)
+  );
 
   if (!hasAnyDependencies) {
     return (
@@ -110,6 +112,9 @@ export default function DependenciesSection({ dependencies }: DependenciesSectio
         <div className="space-y-6">
           {dependencies.python && renderDependencyGroup('Python Dependencies', dependencies.python, '🐍')}
           {dependencies.javascript && renderDependencyGroup('JavaScript Dependencies', dependencies.javascript, '📦')}
+          {dependencies.java && renderDependencyGroup('Java / Kotlin Dependencies', dependencies.java, '☕')}
+          {dependencies.rust && renderDependencyGroup('Rust Crates', dependencies.rust, '🦀')}
+          {dependencies.cpp && renderDependencyGroup('C / C++ Libraries', dependencies.cpp, '⚙️')}
           {dependencies.other && renderDependencyGroup('Other Dependencies', dependencies.other, '🔧')}
         </div>
       )}

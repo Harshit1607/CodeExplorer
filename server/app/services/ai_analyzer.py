@@ -4,8 +4,10 @@ from groq import AsyncGroq
 from fastapi import HTTPException
 from typing import Dict, Any, List
 
+from app.services.llm import completion_kwargs, groq_api_key
+
 def get_groq_client():
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = groq_api_key()
     if not api_key:
         return None
     return AsyncGroq(api_key=api_key)
@@ -47,13 +49,12 @@ STRICT REQUIREMENTS:
 
         try:
             response = await self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
                 messages=[
                     {"role": "system", "content": "You are a senior software architect. Provide a technical, objective, and insightful analysis of codebases."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.2, # Lower temperature for more factual output
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                **completion_kwargs(max_tokens=2500, temperature=0.2),
             )
             
             return json.loads(response.choices[0].message.content)

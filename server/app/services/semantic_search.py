@@ -235,118 +235,177 @@ def calculate_relevance_score(item: Dict, query_terms: Set[str], expanded_terms:
 
     return score
 
-def semantic_search(query: str, analysis_data: Dict, limit: int = 30) -> List[Dict[str, Any]]:
-    """
-    Perform semantic search on the analyzed repository data.
-
-    Uses keyword expansion, fuzzy matching, and concept mapping to find relevant code elements.
-    """
-    if not query.strip():
-        return []
-
-    # Determine format (streaming vs old)
-    is_streaming = "repoMeta" in analysis_data
-    
-    files = {}
-    if is_streaming:
-        for f in analysis_data.get("complexity", {}).get("fileList", []):
-            files[f["file"]] = {
+# ---------------------------------------------------------------------------
+# Index construction
+# ---------------------------------------------------------------------------
+def files_from_analysis_data(analysis_data: Dict) -> Dict[str, Dict]:
+    """Extract {path: {functions, classes, imports}} from client-supplied analysis data."""
+    if not analysis_data:
+        return {}
+    if "repoMeta" in analysis_data or "complexity" in analysis_data:
+        return {
+            f["file"]: {
                 "functions": f.get("functions", []),
                 "classes": f.get("classes", []),
-                "imports": f.get("imports", [])  # Complexity list might not have imports, but just in case
+                "imports": f.get("imports", []),
             }
-    else:
-        structure = analysis_data.get("structure_analysis", {})
-        files = structure.get("files", {})
+            for f in (analysis_data.get("complexity") or {}).get("fileList", [])
+            if f.get("file")
+        }
+    return analysis_data.get("structure_analysis", {}).get("files", {})
 
-    # Parse query
-    query_terms = set(re.findall(r'\w+', query.lower()))
-    # Also split any camelCase in query
-    for term in list(query_terms):
-        query_terms.update(split_identifier(term))
 
-    expanded_terms = expand_query(query)
-
-    # Build search index
-    search_index = []
-
+def _build_keyword_index(files: Dict[str, Dict]) -> List[Dict[str, Any]]:
+    index = []
     for file_path, info in files.items():
-        # Normalize path
-        normalized_path = file_path.replace("\\", "/")
-        file_name = normalized_path.split("/")[-1]
-        dir_path = "/".join(normalized_path.split("/")[:-1])
-
-        # Add file
-        search_index.append({
-            "type": "file",
-            "name": file_name,
-            "file_path": normalized_path,
-            "context": dir_path or "root",
-        })
-
-        # Add functions
+        path = file_path.replace("\\", "/")
+        file_name = path.split("/")[-1]
+        dir_path = "/".join(path.split("/")[:-1])
+        index.append({"type": "file", "name": file_name, "file_path": path, "context": dir_path or "root"})
         for func in info.get("functions", []):
-            search_index.append({
-                "type": "function",
-                "name": func,
-                "file_path": normalized_path,
-                "context": f"function in {file_name}",
-            })
-
-        # Add classes
+            index.append({"type": "function", "name": func, "file_path": path, "context": f"function in {file_name}"})
         for cls in info.get("classes", []):
-            search_index.append({
-                "type": "class",
-                "name": cls,
-                "file_path": normalized_path,
-                "context": f"class in {file_name}",
-            })
-
-        # Add imports (but with lower priority - they'll get scored lower)
+            index.append({"type": "class", "name": cls, "file_path": path, "context": f"class in {file_name}"})
         for imp in info.get("imports", []):
-            search_index.append({
-                "type": "import",
-                "name": imp,
-                "file_path": normalized_path,
-                "context": f"imported in {file_name}",
-            })
+            index.append({"type": "import", "name": imp, "file_path": path, "context": f"imported in {file_name}"})
+    return index
 
-    # Score all items
-    scored_results = []
-    for item in search_index:
+
+def _parse_query(query: str):
+    terms = set(re.findall(r'\w+', query.lower()))
+    for term in list(terms):
+        terms.update(split_identifier(term))
+    return terms, expand_query(query)
+
+
+# ---------------------------------------------------------------------------
+# Keyword search (concept expansion + fuzzy name matching)
+# ---------------------------------------------------------------------------
+def keyword_search(query: str, files: Dict[str, Dict], limit: int = 30) -> List[Dict[str, Any]]:
+    if not query.strip():
+        return []
+    query_terms, expanded_terms = _parse_query(query)
+    scored = []
+    for item in _build_keyword_index(files):
         score = calculate_relevance_score(item, query_terms, expanded_terms)
         if score > 0:
-            scored_results.append({
-                **item,
-                "score": round(score, 1),
-            })
+            scored.append({**item, "score": round(score, 1)})
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]
 
-    # Sort by score and limit
-    scored_results.sort(key=lambda x: x["score"], reverse=True)
 
-    return scored_results[:limit]
+def semantic_search(query: str, analysis_data: Dict, limit: int = 30) -> List[Dict[str, Any]]:
+    """Backward-compatible keyword search over client-supplied analysis data."""
+    return keyword_search(query, files_from_analysis_data(analysis_data), limit)
 
-def search_with_ai_ranking(query: str, analysis_data: Dict, groq_client=None) -> Dict[str, Any]:
-    """
-    Perform semantic search and return organized results.
-    """
-    results = semantic_search(query, analysis_data, limit=30)
 
-    # Group results by type
+# ---------------------------------------------------------------------------
+# Hybrid search: keyword ranking + vector ranking, fused with RRF
+# ---------------------------------------------------------------------------
+RRF_K = 60                 # standard reciprocal-rank-fusion constant
+MIN_VECTOR_SIMILARITY = 0.45
+SNIPPET_LINES = 14
+TYPE_ORDER = ["function", "class", "file", "import"]
+
+
+def _chunk_to_item(chunk) -> Dict[str, Any]:
+    """Map an embedded chunk onto the same identity scheme as the keyword index."""
+    file_name = chunk.file.split("/")[-1]
+    if chunk.symbol and chunk.kind in ("function", "method", "class"):
+        short = chunk.symbol.split(".")[-1]
+        item_type = "class" if chunk.kind == "class" else "function"
+        context = f"{chunk.kind} {chunk.symbol} in {file_name}"
+        return {"type": item_type, "name": short, "file_path": chunk.file, "context": context}
+    return {"type": "file", "name": file_name, "file_path": chunk.file,
+            "context": "/".join(chunk.file.split("/")[:-1]) or "root"}
+
+
+def _key(item: Dict[str, Any]):
+    return item["type"], item["name"], item["file_path"]
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][\w$.]*$")
+_SECONDARY_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|__mocks__|spec|specs|examples?|samples?|demos?|docs|fixtures?|benchmarks?)(/|$)|(^|/)test_|_test\.|\.test\.|\.spec\.")
+_SECONDARY_QUERY_RE = re.compile(r"\b(tests?|spec|specs|mock|fixtures?|examples?|samples?|demo)\b", re.I)
+
+
+def _fusion_weights(query: str):
+    """(keyword_weight, vector_weight). Identifier lookups trust keywords, phrases trust vectors."""
+    words = query.split()
+    if len(words) == 1 and _IDENTIFIER_RE.match(words[0]):
+        return 1.0, 0.6
+    if len(words) <= 2:
+        return 0.8, 1.0
+    return 0.4, 1.0
+
+
+def hybrid_search(query: str, files: Dict[str, Dict], vector_index=None,
+                  limit: int = 30, mode: str = "hybrid") -> Dict[str, Any]:
+    use_vectors = mode in ("hybrid", "semantic") and vector_index is not None and vector_index.searchable
+    use_keywords = mode in ("hybrid", "keyword") or not use_vectors
+
+    kw_results = keyword_search(query, files, limit=100) if use_keywords else []
+
+    vec_items: Dict[tuple, Dict[str, Any]] = {}
+    if use_vectors:
+        for chunk, sim in vector_index.search(query, k=80, min_score=MIN_VECTOR_SIMILARITY):
+            item = _chunk_to_item(chunk)
+            k = _key(item)
+            if k in vec_items and vec_items[k]["similarity"] >= sim:
+                continue  # keep the best-matching chunk per symbol
+            lines = chunk.code.splitlines()
+            snippet = "\n".join(lines[:SNIPPET_LINES]) + ("\n..." if len(lines) > SNIPPET_LINES else "")
+            vec_items[k] = {**item, "similarity": round(sim, 3), "start_line": chunk.start_line,
+                            "end_line": chunk.end_line, "snippet": snippet}
+
+    vec_ranked = sorted(vec_items.values(), key=lambda x: x["similarity"], reverse=True)
+    w_kw, w_vec = _fusion_weights(query)
+    if not kw_results:
+        w_kw = 0.0
+    if not vec_ranked:
+        w_vec = 0.0
+    max_fused = (w_kw + w_vec or 1.0) / (RRF_K + 1)
+    penalize_secondary = not _SECONDARY_QUERY_RE.search(query)
+
+    fused: Dict[tuple, Dict[str, Any]] = {}
+    for rank, item in enumerate(kw_results, start=1):
+        fused[_key(item)] = {**item, "keyword_score": item["score"], "_rrf": w_kw / (RRF_K + rank), "match": "keyword"}
+    for rank, item in enumerate(vec_ranked, start=1):
+        k = _key(item)
+        if k in fused:
+            entry = fused[k]
+            entry.update({kk: item[kk] for kk in ("similarity", "start_line", "end_line", "snippet")})
+            entry["context"] = item["context"]
+            entry["_rrf"] += w_vec / (RRF_K + rank)
+            entry["match"] = "hybrid"
+        else:
+            fused[k] = {**item, "_rrf": w_vec / (RRF_K + rank), "match": "semantic"}
+
+    if penalize_secondary:
+        # Tests / examples / docs are useful, but rarely what an explorer is looking for first.
+        for entry in fused.values():
+            if _SECONDARY_PATH_RE.search(entry["file_path"].lower()):
+                entry["_rrf"] *= 0.75
+
+    results = sorted(fused.values(), key=lambda x: (x["_rrf"], x.get("similarity") or 0), reverse=True)[:limit]
+    for r in results:
+        # 100 = ranked first by every active retriever
+        r["score"] = round(100 * r.pop("_rrf") / max_fused, 1)
+
     grouped = defaultdict(list)
-    for result in results:
-        grouped[result["type"]].append(result)
-
-    # Sort groups to show most relevant types first
-    type_order = ["function", "class", "file", "import"]
-    sorted_grouped = {}
-    for t in type_order:
-        if t in grouped:
-            sorted_grouped[t] = grouped[t]
+    for r in results:
+        grouped[r["type"]].append(r)
 
     return {
         "query": query,
         "total_results": len(results),
         "results": results,
-        "grouped": sorted_grouped,
+        "grouped": {t: grouped[t] for t in TYPE_ORDER if t in grouped},
+        "mode": "hybrid" if (use_vectors and use_keywords) else ("semantic" if use_vectors else "keyword"),
+        "index": vector_index.info() if vector_index is not None else None,
     }
+
+
+def search_with_ai_ranking(query: str, analysis_data: Dict, groq_client=None) -> Dict[str, Any]:
+    """Backward-compatible entry point (keyword only)."""
+    return hybrid_search(query, files_from_analysis_data(analysis_data), None, mode="keyword")

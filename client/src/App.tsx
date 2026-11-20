@@ -151,7 +151,7 @@ function App() {
                   </div>
                   <div className="mt-4 max-h-32 overflow-y-auto text-xs text-[var(--text-muted)] space-y-1">
                     {analysisState.events.slice(0, 5).map((ev, i) => (
-                      <div key={i}>✓ Received: {ev}</div>
+                      <div key={i}>{ev.startsWith('⚠') ? ev : `✓ ${ev}`}</div>
                     ))}
                   </div>
                 </div>

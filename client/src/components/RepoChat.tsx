@@ -1,9 +1,83 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, Fragment, ReactNode } from 'react';
 import axios from 'axios';
+
+interface ChatSource {
+  file: string;
+  start_line: number;
+  end_line: number;
+  symbol?: string | null;
+  reason: string;
+}
 
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  sources?: ChatSource[];
+  retrieval?: 'semantic' | 'files' | 'none';
+}
+
+/** Slim fallback payload, used by the server only if the analysis session has expired. */
+function slimAnalysis(a: any) {
+  if (!a) return null;
+  return {
+    repoMeta: a.repoMeta,
+    languages: a.languages,
+    frameworks: a.frameworks,
+    databases: a.databases,
+    dependencies: a.dependencies,
+    entryPoints: a.entryPoints,
+    keyFiles: a.keyFiles,
+    quickstart: a.quickstart,
+    complexity: { fileList: a.complexity?.fileList || [] },
+  };
+}
+
+function sourceLink(repoMeta: any, s: ChatSource): string | null {
+  const url: string | undefined = repoMeta?.url;
+  if (!url || !url.startsWith('https://github.com/')) return null;
+  const branch = repoMeta?.default_branch || 'HEAD';
+  return `${url.replace(/\.git$/, '').replace(/\/$/, '')}/blob/${branch}/${s.file}#L${s.start_line}-L${s.end_line}`;
+}
+
+/** Inline `code` and **bold**. */
+function renderInline(text: string): ReactNode[] {
+  return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return <code key={i} className="px-1 py-0.5 rounded bg-black/10 dark:bg-white/10 font-mono text-[0.85em]">{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return <strong key={i}>{part.slice(2, -2)}</strong>;
+    }
+    return <Fragment key={i}>{part}</Fragment>;
+  });
+}
+
+/** Minimal Markdown: fenced code blocks, headings, inline code and bold. */
+function MessageBody({ content }: { content: string }) {
+  const blocks = content.split(/```[\w+-]*\n?/);
+  return (
+    <div className="text-sm space-y-2">
+      {blocks.map((block, i) =>
+        i % 2 === 1 ? (
+          <pre key={i} className="text-xs bg-black/5 dark:bg-black/30 border border-[var(--border-color)] rounded-lg p-3 overflow-x-auto font-mono whitespace-pre">
+            {block.replace(/\n$/, '')}
+          </pre>
+        ) : (
+          <div key={i} className="whitespace-pre-wrap">
+            {block.split('\n').map((line, j, arr) => {
+              const heading = line.match(/^#{1,4}\s+(.*)$/);
+              return (
+                <Fragment key={j}>
+                  {heading ? <span className="font-semibold">{renderInline(heading[1])}</span> : renderInline(line)}
+                  {j < arr.length - 1 && '\n'}
+                </Fragment>
+              );
+            })}
+          </div>
+        )
+      )}
+    </div>
+  );
 }
 
 interface RepoChatProps {
@@ -50,13 +124,15 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
     const detail = err.response?.data?.detail || '';
 
     switch (status) {
-      case 429:
+      case 429: {
+        const retryAfter = parseInt(err.response?.headers?.['retry-after'] ?? '', 10);
         return {
-          message: 'Rate limit reached. Please wait before sending another message.',
+          message: detail || 'Rate limit reached. Please wait before sending another message.',
           type: 'rate_limit',
           canRetry: true,
-          retryAfter: 30,
+          retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 300) : 30,
         };
+      }
       case 401:
         return {
           message: 'AI service authentication failed. Please contact support.',
@@ -107,12 +183,17 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
       const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
       const response = await axios.post(`${API_BASE_URL}/api/chat`, {
         question: userMessage,
-        analysis_data: analysisData,
-        chat_history: messages,
+        session_id: analysisData?.sessionId,
+        analysis_data: slimAnalysis(analysisData),
+        chat_history: messages.map(({ role, content }) => ({ role, content })),
       });
 
-      // Add assistant response
-      setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: response.data.response,
+        sources: response.data.sources || [],
+        retrieval: response.data.retrieval,
+      }]);
     } catch (err: any) {
       console.error('Chat error:', err);
       const errorInfo = parseError(err);
@@ -138,7 +219,7 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
   ];
 
   return (
-    <div className="flex flex-col h-[500px] bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] overflow-hidden">
+    <div className="flex flex-col h-[640px] bg-[var(--bg-secondary)] rounded-xl border border-[var(--border-color)] overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
         <div className="flex items-center gap-2">
@@ -146,7 +227,11 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
           <h3 className="font-semibold text-[var(--text-primary)]">Chat with Repository</h3>
         </div>
         <p className="text-xs text-[var(--text-secondary)] mt-1">
-          Ask about code syntax, implementation details, how functions work, and more
+          {analysisData?.searchIndex?.status === 'ready'
+            ? `Answers are grounded in the most relevant code, retrieved from ${analysisData.searchIndex.total} indexed chunks`
+            : analysisData?.searchIndex?.status === 'building'
+              ? `Indexing code for better answers (${analysisData.searchIndex.indexed}/${analysisData.searchIndex.total})...`
+              : 'Ask about code syntax, implementation details, how functions work, and more'}
         </p>
       </div>
 
@@ -180,13 +265,39 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
               className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[80%] px-4 py-2 rounded-2xl ${
+                className={`max-w-[85%] min-w-0 px-4 py-2 rounded-2xl ${
                   msg.role === 'user'
                     ? 'bg-primary-600 text-white rounded-br-md'
                     : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-bl-md'
                 }`}
               >
-                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                {msg.role === 'user'
+                  ? <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                  : <MessageBody content={msg.content} />}
+
+                {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                  <div className="mt-3 pt-2 border-t border-[var(--border-color)]">
+                    <p className="text-[11px] text-[var(--text-muted)] mb-1.5">
+                      Sources ({msg.retrieval === 'semantic' ? 'retrieved for this question' : 'selected files'})
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.sources.map((s, i) => {
+                        const href = sourceLink(analysisData?.repoMeta, s);
+                        const label = `${s.file.split('/').pop()}:${s.start_line}-${s.end_line}`;
+                        const title = `${s.file}${s.symbol ? ` · ${s.symbol}` : ''} (${s.reason})`;
+                        const cls = 'px-2 py-0.5 text-[11px] font-mono rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-secondary)]';
+                        return href ? (
+                          <a key={i} href={href} target="_blank" rel="noreferrer" title={title}
+                             className={`${cls} hover:text-primary-600 dark:hover:text-primary-400 hover:border-primary-400`}>
+                            {s.symbol ? `${s.symbol.split('.').pop()} · ` : ''}{label}
+                          </a>
+                        ) : (
+                          <span key={i} title={title} className={cls}>{label}</span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ))

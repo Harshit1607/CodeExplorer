@@ -1,51 +1,63 @@
+from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+
+from app.core.rate_limit import rate_limit
 from app.services.chat_service import chat_about_repo
+from app.services.session_store import sessions
 
 router = APIRouter()
+
 
 class ChatMessage(BaseModel):
     role: str
     content: str
 
+
 class ChatRequest(BaseModel):
     question: str
-    analysis_data: dict
+    # Preferred: the analysis session (server-side data + vector index → RAG).
+    session_id: Optional[str] = None
+    # Fallback when the session has expired.
+    analysis_data: Optional[dict] = None
     chat_history: Optional[List[ChatMessage]] = None
+
+
+class ChatSource(BaseModel):
+    file: str
+    start_line: int
+    end_line: int
+    symbol: Optional[str] = None
+    reason: str
+
 
 class ChatResponse(BaseModel):
     response: str
+    sources: List[ChatSource] = []
+    retrieval: str = "none"   # semantic | files | none
 
-@router.post("/chat", response_model=ChatResponse)
+
+@router.post("/chat", response_model=ChatResponse, dependencies=[rate_limit("chat")])
 def chat(data: ChatRequest):
-    """
-    Chat about an analyzed repository.
-    """
-    # Log incoming request for debugging
-    print(f"Chat request received. Question: {data.question[:50]}...")
-    if data.analysis_data:
-        print(f"Analysis data keys: {list(data.analysis_data.keys())}")
-    else:
-        print("WARNING: analysis_data is missing or None")
+    """Chat about an analyzed repository (retrieval-augmented when a session index exists)."""
+    if not data.question.strip():
+        raise HTTPException(status_code=400, detail="Question is empty.")
+
+    pipeline = sessions.get(data.session_id)
+    if not pipeline and not data.analysis_data:
         raise HTTPException(
             status_code=400,
             detail="Repository analysis data is missing. Please wait for analysis to complete."
         )
 
-    history = None
-    if data.chat_history:
-        history = [{"role": msg.role, "content": msg.content} for msg in data.chat_history]
-
+    history = [{"role": m.role, "content": m.content} for m in (data.chat_history or [])]
     try:
-        response = chat_about_repo(
-            question=data.question,
-            analysis_data=data.analysis_data,
-            chat_history=history
-        )
-        return ChatResponse(response=response)
-    except HTTPException as e:
-        raise e
+        result = chat_about_repo(data.question, data.analysis_data, history, pipeline=pipeline)
+        print(f"Chat: retrieval={result['retrieval']} sources={len(result['sources'])} q={data.question[:60]!r}")
+        return ChatResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Unexpected chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 
+from app.services import source_parser
+from app.services import project_manifests
+from app.services.import_resolver import ImportResolver
+
 
 class CodeAnalyzer:
     """
@@ -21,15 +25,23 @@ class CodeAnalyzer:
         ".git", "node_modules", "dist", "build", "__pycache__",
         ".venv", "venv", "env", ".next", "out", "coverage",
         ".pytest_cache", ".mypy_cache", "vendor", "target",
-        ".idea", ".vscode", "bower_components"
+        ".idea", ".vscode", "bower_components",
+        # Python / Java / C++ build & vendored-dependency folders
+        ".tox", ".nox", ".eggs", "site-packages", ".gradle", ".mvn",
+        "cmake-build-debug", "cmake-build-release", "third_party", "3rdparty", ".cargo",
     }
 
     # Extension to language name mapping
     LANGUAGE_NAMES = {
         ".py": "Python",
+        ".pyi": "Python",
         ".js": "JavaScript",
+        ".mjs": "JavaScript",
+        ".cjs": "JavaScript",
         ".jsx": "JavaScript (React)",
         ".ts": "TypeScript",
+        ".mts": "TypeScript",
+        ".cts": "TypeScript",
         ".tsx": "TypeScript (React)",
         ".java": "Java",
         ".go": "Go",
@@ -42,8 +54,13 @@ class CodeAnalyzer:
         ".scala": "Scala",
         ".c": "C",
         ".cpp": "C++",
+        ".cc": "C++",
+        ".cxx": "C++",
         ".h": "C/C++ Header",
         ".hpp": "C++ Header",
+        ".hh": "C++ Header",
+        ".hxx": "C++ Header",
+        ".ipp": "C++ Header",
         ".vue": "Vue",
         ".svelte": "Svelte",
     }
@@ -81,6 +98,11 @@ class CodeAnalyzer:
         'Flask': re.compile(r"@app\.route\s*\(\s*['\"']([^'\"']+)['\"'](?:.*methods\s*=\s*\[(.*)\])?", re.IGNORECASE),
         'Django': re.compile(r"path\s*\(\s*['\"']([^'\"']+)['\"']\s*,\s*([\w\.]+)", re.IGNORECASE),
         'Spring Boot': re.compile(r"@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(\s*(?:value\s*=\s*)?['\"']([^'\"']+)['\"']", re.IGNORECASE),
+        # Rust: #[get("/users/{id}")] async fn handler(...)
+        'Actix Web': re.compile(r'#\[(get|post|put|delete|patch)\s*\(\s*"([^"]+)"'),
+        'Rocket': re.compile(r'#\[(get|post|put|delete|patch)\s*\(\s*"([^"]+)"'),
+        # Rust: .route("/users", get(list_users))
+        'Axum': re.compile(r'\.route\s*\(\s*"([^"]+)"\s*,\s*(get|post|put|delete|patch)\s*\(\s*([\w:]+)'),
     }
 
     DB_QUERY_REGEX = re.compile(
@@ -106,6 +128,10 @@ class CodeAnalyzer:
         self.all_imports: List[str] = []
         self.all_npm_deps: Set[str] = set()
         self.all_python_deps: Set[str] = set()
+        self.dep_sets: Dict[str, Set[str]] = {}
+        self.runtime_dep_sets: Dict[str, Set[str]] = {}
+        self._manifest_cache: Optional[Dict[str, List[str]]] = None
+        self._entry_cache: Optional[List[str]] = None
         # Temporary storage for full file contents (used for call graph, cleared after)
         self._file_contents: Dict[str, str] = {}
         # Cross-boundary traces
@@ -126,11 +152,8 @@ class CodeAnalyzer:
         # Extract all dependencies first (needed for framework detection)
         dependencies = self._extract_dependencies()
 
-        # Collect all npm and python deps for framework/db detection
-        for deps in dependencies.get('javascript', {}).values():
-            self.all_npm_deps.update(deps)
-        for deps in dependencies.get('python', {}).values():
-            self.all_python_deps.update(d.lower() for d in deps)
+        # Dependency name sets per ecosystem for framework/db detection
+        self._collect_dependency_sets(dependencies)
 
         # Detect frameworks and databases using collected deps
         frameworks = self._detect_frameworks()
@@ -173,13 +196,17 @@ class CodeAnalyzer:
             "readme": self._extract_readme(),
             "package_manager": self._detect_package_manager(),
             "run_scripts": self._extract_run_scripts(),
+            "build_systems": self._build_systems(),
         }
+
+    def _keep_dir(self, name: str) -> bool:
+        return name not in self.SKIP_DIRS and not name.endswith(".egg-info")
 
     def _get_source_files(self) -> List[Path]:
         """Get all source files, excluding ignored directories and files."""
         result = []
         for root, dirs, files in os.walk(self.repo_path):
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
+            dirs[:] = [d for d in dirs if self._keep_dir(d)]
 
             for name in files:
                 if name.lower() in self.IGNORE_FILES:
@@ -217,9 +244,25 @@ class CodeAnalyzer:
                 "content_truncated": len(content) > self.MAX_CONTENT_SIZE
             }
 
-            if ext == ".py":
+            parsed = source_parser.parse_source(content, ext) if source_parser.supports(ext) else None
+            if parsed is not None:
+                # Tree-sitter: exact symbols with line ranges, structured imports and call sites.
+                meta.update({
+                    "imports": parsed.import_strings,
+                    "functions": parsed.functions,
+                    "classes": parsed.classes,
+                    "has_main": parsed.has_main,
+                    "symbols": [s.to_dict() for s in parsed.symbols],
+                    "import_refs": [r.to_dict() for r in parsed.imports],
+                    "parser": "tree-sitter",
+                })
+                if parsed.package:
+                    meta["package"] = parsed.package
+                if parsed.type_refs:
+                    meta["type_refs"] = sorted(parsed.type_refs)
+            elif ext == ".py":
                 meta.update(self._analyze_python(content))
-            elif ext in {".js", ".jsx", ".ts", ".tsx"}:
+            elif ext in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}:
                 meta.update(self._analyze_js(content))
             elif ext == ".java":
                 meta.update(self._analyze_java(content))
@@ -326,103 +369,34 @@ class CodeAnalyzer:
             stats[lang]["lines"] += meta.get("lines", 0)
         return stats
 
+    def _manifests(self) -> Dict[str, List[str]]:
+        if getattr(self, "_manifest_cache", None) is None:
+            self._manifest_cache = project_manifests.find_manifests(
+                str(self.repo_path), self.SKIP_DIRS | {"node_modules", ".git"})
+        return self._manifest_cache
+
     def _extract_dependencies(self) -> Dict[str, Dict[str, List[str]]]:
-        """Extract dependencies from ALL config files in the repo."""
-        dependencies = {
-            "python": {},
-            "javascript": {},
-            "other": {}
-        }
+        """Dependencies from every manifest in the repo, grouped by ecosystem
+        (python, javascript, java, rust, cpp, other)."""
+        return project_manifests.extract_dependencies(str(self.repo_path), self._manifests())
 
-        # Find all package.json files (for monorepos)
-        for root, dirs, files in os.walk(self.repo_path):
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
-            rel_root = Path(root).relative_to(self.repo_path)
+    def _collect_dependency_sets(self, dependencies: Dict[str, Dict[str, List[str]]]) -> None:
+        """Lower-cased dependency names per ecosystem, used by framework/database detection."""
+        self.dep_sets = project_manifests.dependency_sets(dependencies)
+        # dev/test/build groups excluded: an Express devDependency used as a test server
+        # doesn't make the project an Express backend
+        self.runtime_dep_sets = project_manifests.dependency_sets(dependencies, runtime_only=True)
+        self.all_npm_deps.update(self.dep_sets.get("javascript", set()))
+        self.all_python_deps.update(self.dep_sets.get("python", set()))
 
-            for filename in files:
-                file_path = Path(root) / filename
-
-                # JavaScript - package.json
-                if filename == 'package.json':
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            pkg = json.load(f)
-                            prefix = str(rel_root) if str(rel_root) != '.' else ''
-
-                            if pkg.get('dependencies'):
-                                key = f"{prefix}/dependencies" if prefix else "dependencies"
-                                dependencies["javascript"][key] = list(pkg['dependencies'].keys())
-                            if pkg.get('devDependencies'):
-                                key = f"{prefix}/devDependencies" if prefix else "devDependencies"
-                                dependencies["javascript"][key] = list(pkg['devDependencies'].keys())
-                    except:
-                        pass
-
-                # Python - requirements.txt
-                if filename.lower() in ['requirements.txt', 'requirements-dev.txt', 'requirements.dev.txt']:
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            deps = []
-                            for line in f:
-                                line = line.strip()
-                                if line and not line.startswith('#') and not line.startswith('-'):
-                                    pkg = re.split(r'[=<>!~\[]', line)[0].strip()
-                                    if pkg:
-                                        deps.append(pkg)
-                            if deps:
-                                prefix = str(rel_root) if str(rel_root) != '.' else ''
-                                key = f"{prefix}/{filename}" if prefix else filename
-                                dependencies["python"][key] = deps
-                    except:
-                        pass
-
-                # Python - pyproject.toml
-                if filename == 'pyproject.toml':
-                    try:
-                        content = file_path.read_text()
-                        # Look for dependencies in [project.dependencies] or [tool.poetry.dependencies]
-                        deps = []
-                        in_deps_section = False
-                        for line in content.split('\n'):
-                            if '[project.dependencies]' in line or '[tool.poetry.dependencies]' in line:
-                                in_deps_section = True
-                                continue
-                            if in_deps_section:
-                                if line.startswith('['):
-                                    break
-                                match = re.match(r'^([a-zA-Z0-9_-]+)\s*=', line.strip())
-                                if match:
-                                    deps.append(match.group(1))
-                        if deps:
-                            prefix = str(rel_root) if str(rel_root) != '.' else ''
-                            key = f"{prefix}/pyproject.toml" if prefix else "pyproject.toml"
-                            dependencies["python"][key] = deps
-                    except:
-                        pass
-
-        # Go - go.mod (root only)
-        go_mod_path = self.repo_path / "go.mod"
-        if go_mod_path.exists():
-            try:
-                content = go_mod_path.read_text()
-                deps = re.findall(r'^\s*([\w./-]+)\s+v', content, re.MULTILINE)
-                if deps:
-                    dependencies["other"]["go.mod"] = deps
-            except:
-                pass
-
-        # Rust - Cargo.toml (root only)
-        cargo_path = self.repo_path / "Cargo.toml"
-        if cargo_path.exists():
-            try:
-                content = cargo_path.read_text()
-                deps = re.findall(r'^\s*([a-zA-Z0-9_-]+)\s*=', content, re.MULTILINE)
-                if deps:
-                    dependencies["other"]["Cargo.toml"] = [d for d in deps if d not in ['name', 'version', 'edition', 'authors']]
-            except:
-                pass
-
-        return dependencies
+    def _build_systems(self) -> List[Dict[str, Any]]:
+        """Install / build / run / test commands per detected project root."""
+        try:
+            return project_manifests.build_systems(str(self.repo_path), self._manifests(), self.files,
+                                                   getattr(self, "dep_sets", {}))
+        except Exception as e:  # never break the quick start over one odd manifest
+            print(f"build_systems failed: {e}")
+            return []
 
     def _detect_frameworks(self) -> Dict[str, List[str]]:
         """Detect frontend and backend frameworks."""
@@ -435,7 +409,7 @@ class CodeAnalyzer:
         # Check for config files in entire repo
         config_files = set()
         for _, dirs, files in os.walk(self.repo_path):
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
+            dirs[:] = [d for d in dirs if self._keep_dir(d)]
             for f in files:
                 config_files.add(f.lower())
 
@@ -474,6 +448,11 @@ class CodeAnalyzer:
             frontend.append('Tailwind CSS')
 
         # ===== Backend frameworks =====
+
+        # Backends are decided by runtime dependencies: a server framework that only appears in
+        # devDependencies / dev extras is a test helper (e.g. ky's test server), not the backend.
+        npm_deps = self.runtime_dep_sets.get("javascript", set()) if self.runtime_dep_sets else npm_deps
+        python_deps = self.runtime_dep_sets.get("python", set()) if self.runtime_dep_sets else python_deps
 
         # Python backends
         if 'fastapi' in python_deps:
@@ -543,17 +522,93 @@ class CodeAnalyzer:
                 except:
                     pass
 
+        self._detect_more_frameworks(frontend, backend, config_files)
+
         return {
-            "frontend": list(set(frontend)),
-            "backend": list(set(backend))
+            "frontend": sorted(set(frontend)),
+            "backend": sorted(set(backend))
         }
+
+    # Dependency name -> framework, per ecosystem. Matching is on exact names, or on a
+    # "group:" / "group." prefix for Java coordinates.
+    _FRAMEWORK_RULES = {
+        "python": {
+            "backend": {"aiohttp": "aiohttp", "tornado": "Tornado", "sanic": "Sanic", "litestar": "Litestar",
+                        "starlette": "Starlette", "celery": "Celery", "grpcio": "gRPC"},
+            "frontend": {"streamlit": "Streamlit", "gradio": "Gradio", "dash": "Dash", "pyqt5": "Qt (PyQt)",
+                         "pyqt6": "Qt (PyQt)", "pyside6": "Qt (PySide)"},
+        },
+        "javascript": {
+            "backend": {"fastify": "Fastify", "hono": "Hono", "@trpc/server": "tRPC", "electron": "Electron"},
+            "frontend": {"@remix-run/react": "Remix", "astro": "Astro", "solid-js": "SolidJS",
+                         "react-native": "React Native", "expo": "Expo", "@angular/core": "Angular"},
+        },
+        "rust": {
+            "backend": {"actix-web": "Actix Web", "axum": "Axum", "rocket": "Rocket", "warp": "Warp",
+                        "poem": "Poem", "tonic": "gRPC (tonic)", "tokio": "Tokio"},
+            "frontend": {"tauri": "Tauri", "leptos": "Leptos", "yew": "Yew", "dioxus": "Dioxus",
+                         "egui": "egui", "bevy": "Bevy", "iced": "iced"},
+        },
+        "java": {
+            "backend": {"org.springframework.boot": "Spring Boot", "io.quarkus": "Quarkus",
+                        "io.micronaut": "Micronaut", "io.vertx": "Vert.x", "io.dropwizard": "Dropwizard",
+                        "io.javalin": "Javalin", "jakarta.platform": "Jakarta EE", "io.grpc": "gRPC"},
+            "frontend": {"org.openjfx": "JavaFX", "com.android.application": "Android",
+                         "com.android.library": "Android", "androidx.compose": "Jetpack Compose"},
+        },
+        "cpp": {
+            "backend": {"drogon": "Drogon", "crow": "Crow", "oatpp": "oat++", "pistache": "Pistache",
+                        "grpc": "gRPC", "boost": "Boost"},
+            "frontend": {"qt5": "Qt", "qt6": "Qt", "qt": "Qt", "imgui": "Dear ImGui", "wxwidgets": "wxWidgets",
+                         "sdl2": "SDL", "sfml": "SFML", "glfw3": "GLFW", "glfw": "GLFW"},
+        },
+    }
+
+    _ECOSYSTEM_EXTS = {
+        "python": (".py",), "javascript": (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"),
+        "java": (".java", ".kt", ".scala"), "rust": (".rs",),
+        "cpp": (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".ipp"),
+    }
+
+    def _has_sources(self, ecosystem: str) -> bool:
+        exts = self._ECOSYSTEM_EXTS.get(ecosystem)
+        return exts is None or any(p.endswith(exts) for p in self.files)
+
+    def _detect_more_frameworks(self, frontend: List[str], backend: List[str], config_files: Set[str]) -> None:
+        for eco, sides in self._FRAMEWORK_RULES.items():
+            for side, rules in sides.items():
+                if not self._has_sources(eco):
+                    continue  # e.g. an Android packaging script in a C++ library
+                deps = self.runtime_dep_sets.get(eco, set()) if side == "backend" else self.dep_sets.get(eco, set())
+                if not deps:
+                    continue
+                target = frontend if side == "frontend" else backend
+                for dep_name, framework in rules.items():
+                    if eco == "java":
+                        hit = any(d == dep_name or d.startswith(dep_name + ":") or d.startswith(dep_name + ".")
+                                  for d in deps)
+                    else:
+                        hit = dep_name in deps
+                    if hit:
+                        target.append(framework)
+        # Spring without Boot
+        java = self.dep_sets.get("java", set())
+        if "Spring Boot" not in backend and any(d.startswith("org.springframework") for d in java):
+            backend.append("Spring")
+        if "androidmanifest.xml" in config_files and self._has_sources("java"):
+            frontend.append("Android")
+        if any(f.endswith(".uproject") for f in config_files):
+            frontend.append("Unreal Engine")
+        # Starlette is FastAPI's foundation: don't list it twice
+        if "FastAPI" in backend and "Starlette" in backend:
+            backend.remove("Starlette")
 
     def _detect_databases(self) -> List[str]:
         """Detect database usage from dependencies and config files."""
         databases = set()
 
-        npm_deps = self.all_npm_deps
-        python_deps = self.all_python_deps
+        npm_deps = self.runtime_dep_sets.get("javascript", set()) if self.runtime_dep_sets else self.all_npm_deps
+        python_deps = self.runtime_dep_sets.get("python", set()) if self.runtime_dep_sets else self.all_python_deps
 
         # Check npm dependencies for database packages
         npm_db_mapping = {
@@ -605,6 +660,38 @@ class CodeAnalyzer:
         for dep, db in python_db_mapping.items():
             if dep in python_deps and db:
                 databases.add(db)
+
+        # Java / Rust / C++ drivers and ORMs
+        other_db_rules = {
+            "java": {"org.postgresql": "PostgreSQL", "com.mysql": "MySQL", "mysql:mysql-connector-java": "MySQL",
+                     "org.mariadb.jdbc": "MySQL", "org.mongodb": "MongoDB", "com.h2database": "H2",
+                     "org.xerial:sqlite-jdbc": "SQLite", "redis.clients": "Redis", "io.lettuce": "Redis",
+                     "org.springframework.boot:spring-boot-starter-data-redis": "Redis",
+                     "org.springframework.boot:spring-boot-starter-data-mongodb": "MongoDB",
+                     "com.oracle.database.jdbc": "Oracle", "org.elasticsearch": "Elasticsearch"},
+            "rust": {"tokio-postgres": "PostgreSQL", "postgres": "PostgreSQL", "mysql": "MySQL",
+                     "mysql_async": "MySQL", "mongodb": "MongoDB", "redis": "Redis", "rusqlite": "SQLite",
+                     "sled": "Sled", "rocksdb": "RocksDB", "elasticsearch": "Elasticsearch"},
+            "cpp": {"postgresql": "PostgreSQL", "libpq": "PostgreSQL", "libpqxx": "PostgreSQL",
+                    "pqxx": "PostgreSQL", "sqlite3": "SQLite", "sqlitecpp": "SQLite", "mysql": "MySQL",
+                    "hiredis": "Redis", "redis-plus-plus": "Redis", "mongo-cxx-driver": "MongoDB",
+                    "rocksdb": "RocksDB", "leveldb": "LevelDB"},
+        }
+        for eco, rules in other_db_rules.items():
+            deps = self.runtime_dep_sets.get(eco, set())
+            for dep_name, db in rules.items():
+                if any(d == dep_name or d.startswith(dep_name + ":") or d.startswith(dep_name + ".") for d in deps):
+                    databases.add(db)
+        # sqlx / diesel / sea-orm pick the database through features: look at Cargo.toml text
+        if self.dep_sets.get("rust", set()) & {"sqlx", "diesel", "sea-orm"}:
+            for rel in self._manifests().get("cargo", []):
+                try:
+                    text = (self.repo_path / rel).read_text(encoding="utf-8", errors="ignore").lower()
+                except OSError:
+                    continue
+                for needle, db in (("postgres", "PostgreSQL"), ("mysql", "MySQL"), ("sqlite", "SQLite")):
+                    if needle in text:
+                        databases.add(db)
 
         # Check Prisma schema for database type
         prisma_schema = self.repo_path / "prisma" / "schema.prisma"
@@ -658,36 +745,99 @@ class CodeAnalyzer:
 
         return list(databases)
 
+    # Extensions where file-name conventions (index.ts, app.py, main.go, ...) mark entry points.
+    # Rust, Java and C/C++ entry points are structural (fn main, static void main, int main,
+    # crate roots), so `mod.rs`, `lib.rs`, `Main.java`, `core.cpp` are not guessed by name.
+    _NAME_CONVENTION_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+                             ".go", ".rb", ".php", ".vue", ".svelte", ".swift", ".kt", ".scala", ".cs"}
+
+    _SECONDARY_PATH_RE = re.compile(
+        r"(^|/)(tests?|__tests__|examples?|samples?|demos?|docs?|fixtures?|benchmarks?|benches|testdata|e2e)(/|$)", re.I)
+
     def _entry_points(self) -> List[str]:
-        """Detect application entry points."""
-        result = []
+        """Detect application entry points: strong signals first, then naming conventions."""
+        if self._entry_cache is not None:
+            return list(self._entry_cache)
+
+        strong: List[str] = []
+        weak: List[str] = []
         for path, meta in self.files.items():
+            ext = Path(path).suffix.lower()
             basename = Path(path).stem.lower()
-
-            if basename in self.ENTRY_BASENAMES:
-                result.append(path)
-                continue
-
             if meta.get("has_main"):
-                result.append(path)
+                strong.append(path)
+            elif ext == ".rs" and re.search(r"(^|/)src/(main|lib)\.rs$|(^|/)src/bin/[^/]+\.rs$", path):
+                strong.append(path)  # crate roots
+            elif ext == ".py" and basename in ("__main__", "manage", "wsgi", "asgi"):
+                strong.append(path)
+            elif ext in self._NAME_CONVENTION_EXTS and basename in self.ENTRY_BASENAMES \
+                    and not self._SECONDARY_PATH_RE.search(path):
+                weak.append(path)
+        strong.extend(self._manifest_entry_points())
 
-        return sorted(set(result))
+        strong_set = set(strong)
+        candidates = strong_set | set(weak)
+        result = sorted(candidates, key=lambda p: (bool(self._SECONDARY_PATH_RE.search(p)), p not in strong_set, p))
+        self._entry_cache = result
+        return list(result)
+
+    def _manifest_entry_points(self) -> List[str]:
+        """Entry points declared in package.json (main/bin/module) and pyproject [project.scripts]."""
+        out = []
+        resolver_exts = ("", ".js", ".ts", ".mjs", ".cjs", ".tsx", ".jsx", "/index.js", "/index.ts")
+        for rel in self._manifests().get("npm", []):
+            try:
+                pkg = json.loads((self.repo_path / rel).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            base = str(Path(rel).parent).replace("\\", "/")
+            base = "" if base == "." else base
+            targets = [pkg.get("main"), pkg.get("module")]
+            bins = pkg.get("bin")
+            targets += list(bins.values()) if isinstance(bins, dict) else [bins]
+            for t in targets:
+                if not isinstance(t, str):
+                    continue
+                t = t.lstrip("./")
+                for ext in resolver_exts:
+                    cand = f"{base}/{t}{ext}" if base else f"{t}{ext}"
+                    if cand in self.files:
+                        out.append(cand)
+                        break
+        for rel in self._manifests().get("pyproject", []):
+            try:
+                import tomllib
+                data = tomllib.loads((self.repo_path / rel).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            base = str(Path(rel).parent).replace("\\", "/")
+            base = "" if base == "." else base
+            scripts = (data.get("project") or {}).get("scripts") or {}
+            for target in scripts.values():
+                module = str(target).split(":")[0].replace(".", "/")
+                for cand in (f"{module}.py", f"src/{module}.py", f"{module}/__init__.py", f"src/{module}/__init__.py"):
+                    cand = f"{base}/{cand}" if base else cand
+                    if cand in self.files:
+                        out.append(cand)
+                        break
+        return out
 
     def _key_files(self) -> List[str]:
         """Identify key/important files."""
         entry_points = []
         important_files = []
 
+        entry_set = set(self._entry_points())
         for path, meta in self.files.items():
-            basename = Path(path).stem.lower()
             path_lower = path.lower()
 
-            # Skip test files
-            if any(x in path_lower for x in ['test_', '_test', 'tests/', '/test/', '.test.', '.spec.']):
+            # Skip test files (pytest, Jest/Vitest, Go, JUnit, Rust/C++ test dirs)
+            if any(x in path_lower for x in ['test_', '_test', 'tests/', '/test/', '.test.', '.spec.', '__tests__/']) \
+                    or path.endswith(('Test.java', 'Tests.java', 'IT.java')):
                 continue
 
             # Priority 1: Entry point files
-            if basename in self.ENTRY_BASENAMES or meta.get("has_main"):
+            if path in entry_set:
                 entry_points.append((path, 1000))
                 continue
 
@@ -749,11 +899,22 @@ class CodeAnalyzer:
         """
         file_deps = {}
 
-        # Create a map of possible module names to file paths
-        file_map = self._build_file_map()
+        # Language-aware resolution for tree-sitter parsed files (Python, JS/TS, Java, Rust, C/C++)
+        resolver = None
+        if any("import_refs" in m for m in self.files.values()):
+            resolver = ImportResolver(self.files, str(self.repo_path))
+        file_map = None
 
         for file_path, meta in self.files.items():
             imports = meta.get('imports', [])
+            if resolver is not None and "import_refs" in meta:
+                resolved, external = resolver.resolve_file(file_path)
+                file_deps[file_path] = {'imports': imports, 'resolved': resolved, 'external': external}
+                continue
+
+            # Fallback: generic path matching (Go, Ruby, PHP, ...)
+            if file_map is None:
+                file_map = self._build_file_map()
             deps = {
                 'imports': imports,  # Raw import strings
                 'resolved': [],      # Resolved to actual files in repo
@@ -1008,13 +1169,37 @@ class CodeAnalyzer:
         # Phase 2: Extract backend routes
         self._extract_all_routes(frameworks)
 
+        # Parents of each registered function (class / impl / struct), for qualified calls
+        symbol_parents: Dict[str, Set[str]] = {}
+        for file_path, meta in self.files.items():
+            for sym in meta.get("symbols", []):
+                if sym.get("parent") and sym["kind"] in ("function", "method", "macro"):
+                    symbol_parents.setdefault(f"{file_path}::{sym['name']}", set()).add(sym["parent"])
+
+        # Barrel files (__init__.py, index.ts, mod.rs, lib.rs) mostly re-export: importing one
+        # makes the files *it* imports visible too (`from click import echo` -> utils.py).
+        def is_barrel(path: str) -> bool:
+            return Path(path).stem in ("__init__", "index", "mod", "lib")
+        expanded_deps: Dict[str, Dict] = {}
+        for file_path, deps in file_dependencies.items():
+            resolved = list(deps.get('resolved', []))
+            for dep in list(resolved):
+                if is_barrel(dep):
+                    resolved.extend(file_dependencies.get(dep, {}).get('resolved', []))
+            expanded_deps[file_path] = {'resolved': resolved}
+
         # Phase 3: Extract call relationships for each file
         for file_path, meta in self.files.items():
             content = self._file_contents.get(file_path, '')
+            ext = meta.get('extension', '')
+
+            if "symbols" in meta:  # tree-sitter: real call sites per function
+                self._extract_symbol_calls(file_path, meta, content, call_graph, func_registry,
+                                           expanded_deps, symbol_parents)
+                continue
             if not content:
                 continue
 
-            ext = meta.get('extension', '')
             if ext == '.py':
                 self._extract_python_calls(file_path, content, call_graph, func_registry, file_dependencies)
             elif ext in {'.js', '.jsx', '.ts', '.tsx'}:
@@ -1035,6 +1220,83 @@ class CodeAnalyzer:
                         call_graph[callee_id]['called_by'].append(qualified_id)
 
         return call_graph
+
+    _JS_EXTS = {'.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.mts', '.cts'}
+    _SELF_QUALIFIERS = {"self", "this", "Self", "super", "cls"}
+
+    def _extract_symbol_calls(self, file_path: str, meta: Dict, content: str, call_graph: Dict,
+                              func_registry: Dict, file_dependencies: Dict,
+                              symbol_parents: Dict[str, Set[str]]) -> None:
+        """Call edges from parsed call sites (tree-sitter), plus API/DB cross-boundary hints."""
+        resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+        ext = meta.get('extension', '')
+        is_js, is_py = ext in self._JS_EXTS, ext in ('.py', '.pyi')
+        lines = content.splitlines() if (content and (is_js or is_py)) else []
+
+        for sym in meta.get("symbols", []):
+            if sym["kind"] not in ("function", "method", "macro"):
+                continue
+            caller_id = f"{file_path}::{sym['name']}"
+            if caller_id not in call_graph:
+                continue
+            calls = call_graph[caller_id]['calls']
+            for name, qualifier, is_member in sym.get("calls", []):
+                if name not in func_registry:
+                    continue
+                for target_id in self._resolve_symbol_call(name, qualifier, is_member, file_path,
+                                                           func_registry, resolved_deps, symbol_parents):
+                    if target_id != caller_id and target_id not in calls:
+                        calls.append(target_id)
+
+            if lines:
+                body = "\n".join(lines[sym["start_line"] - 1: sym["end_line"]])
+                if is_js:
+                    for api_match in self.API_CALL_REGEX.finditer(body):
+                        path = api_match.group(1) or api_match.group(4)
+                        method = api_match.group(2) or api_match.group(3) or 'get'
+                        if path:
+                            self.found_api_calls.append({'caller': caller_id, 'file': file_path,
+                                                         'path': path, 'method': method.lower()})
+                for db_match in self.DB_QUERY_REGEX.finditer(body):
+                    op = db_match.group(1) or db_match.group(2) or 'query'
+                    self.found_db_queries.append({'caller': caller_id, 'file': file_path, 'op': op.lower()})
+
+    def _resolve_symbol_call(self, name: str, qualifier: Optional[str], is_member: bool, current_file: str,
+                             func_registry: Dict, resolved_deps: Set[str],
+                             symbol_parents: Dict[str, Set[str]]) -> List[str]:
+        """
+        Resolve a call to registered functions:
+          self.x() / this.x()   -> same file (same class), else imported files
+          Type::x() / Type.x()  -> functions whose parent is Type (impl/class), else module `Type`
+          plain / obj.x()       -> same file, then imported files, then unambiguous global matches
+        """
+        candidates = func_registry.get(name, [])
+        if not candidates:
+            return []
+        same_file = [c for c in candidates if c.startswith(f"{current_file}::")]
+        imported = [c for c in candidates if c.split('::', 1)[0] in resolved_deps]
+
+        if qualifier in self._SELF_QUALIFIERS:
+            return same_file or imported
+        if qualifier:
+            by_parent = [c for c in candidates if qualifier in symbol_parents.get(c, ())]
+            if by_parent:
+                preferred = [c for c in by_parent if c in same_file or c in imported]
+                return preferred or by_parent[:3]
+            # module / package qualifier: utils.fmt(), click.echo() (package dir), routes::serve()
+            by_module = [c for c in candidates
+                         if Path(c.split('::', 1)[0]).stem == qualifier or Path(c.split('::', 1)[0]).parent.name == qualifier]
+            if by_module:
+                preferred = [c for c in by_module if c in imported]
+                return preferred or by_module[:3]
+        if same_file:
+            return same_file
+        if imported:
+            return imported
+        # Unknown receiver / not imported: only link when unambiguous
+        if is_member:
+            return candidates if len(candidates) == 1 else []
+        return candidates if len(candidates) <= 3 else []
 
     def _extract_python_calls(self, file_path: str, content: str,
                                call_graph: Dict, func_registry: Dict,
@@ -1401,6 +1663,15 @@ class CodeAnalyzer:
                         elif 'delete' in annotation: method = 'delete'
                         handler_match = re.search(r'public\s+\w+\s+(\w+)\s*\(', content[match.end():])
                         handler = handler_match.group(1) if handler_match else None
+                    elif fw in ('Actix Web', 'Rocket'):
+                        method = match.group(1).lower()
+                        path = match.group(2)
+                        handler_match = re.search(r'\bfn\s+(\w+)', content[match.end():])
+                        handler = handler_match.group(1) if handler_match else None
+                    elif fw == 'Axum':
+                        path = match.group(1)
+                        method = match.group(2).lower()
+                        handler = match.group(3).split('::')[-1]
                     
                     if path and handler:
                         # Combine base_prefix and path
