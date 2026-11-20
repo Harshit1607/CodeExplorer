@@ -303,10 +303,7 @@ class StreamingPipeline:
 
         def _deps():
             deps = a._extract_dependencies()
-            for ds in deps.get("javascript", {}).values():
-                a.all_npm_deps.update(ds)
-            for ds in deps.get("python", {}).values():
-                a.all_python_deps.update(d.lower() for d in ds)
+            a._collect_dependency_sets(deps)
             return deps, a._detect_frameworks(), a._detect_databases()
 
         deps, frameworks, databases = await self._in_thread(_deps)
@@ -338,6 +335,7 @@ class StreamingPipeline:
                 "readme": a._extract_readme(),
                 "package_manager": a._detect_package_manager(),
                 "run_scripts": a._extract_run_scripts(),
+                "build_systems": a._build_systems(),
             }
 
         quickstart = await self._in_thread(_qs)
@@ -380,7 +378,7 @@ class StreamingPipeline:
             chunks = []
             for rel, meta in self.analyzer.files.items():
                 content = self.analyzer._file_contents.get(rel) or meta.get("content", "")
-                chunks.extend(chunker.chunk_file(rel, content, meta.get("language", "")))
+                chunks.extend(chunker.chunk_file(rel, content, meta.get("language", ""), meta.get("symbols")))
             return chunks
 
         chunks = await self._in_thread(_chunk)

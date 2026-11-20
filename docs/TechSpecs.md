@@ -41,7 +41,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 - **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers.
 - **AI Analyzer**: Generates automated architectural summaries and insights using LLMs (Groq API).
 - **Streaming Pipeline**: Clones (with live progress), analyzes files in parallel, then runs deep analysis while building the vector index concurrently. Emits batched SSE events with monotonic progress; non-fatal problems are `warning` events, only fatal failures are `error`. Sessions are kept in a TTL-evicted store so clients can reconnect (history is replayed) and search/chat can reuse server-side data.
-- **Code Chunker**: Splits source into symbol-level chunks — exact function/class/method boundaries for Python (via `ast`), definition-regex split points for other languages, overlapping windows for oversized segments.
+- **Code Chunker**: Splits source into symbol-level chunks along tree-sitter symbols (doc comments included; large classes/components split into members), with `ast`/regex fallbacks and overlapping windows for oversized segments.
 - **Vector Index**: Embeds chunks locally with fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, no API key) into an in-memory numpy matrix per session; brute-force cosine search. Searchable incrementally while it builds.
 - **Semantic Search Service**: Hybrid retrieval — concept-expanded keyword matching (50+ concept categories) fused with vector similarity via weighted reciprocal rank fusion. Identifier-like queries lean on keywords, natural-language queries lean on vectors; tests/examples are mildly down-ranked unless asked for. Falls back to keyword-only when no index is available.
 - **Chat Service (RAG)**: Groq-powered chat (`GROQ_MODEL`, default `openai/gpt-oss-120b`). Each question gets a compact repo overview plus code retrieved for that question by the **RAG Retriever**:
@@ -61,6 +61,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 - Python `ast`
 - Groq API (LLM-powered chat)
 - fastembed + numpy (local embeddings / vector search)
+- tree-sitter (Python, JS/TS, Java, Rust, C/C++ parsing)
 - CORS middleware
 
 **Frontend**
@@ -155,38 +156,118 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 ## 8. Code Analysis Capabilities
 
 ### Language Support
-Python, JavaScript, TypeScript, Java, Go, Rust, Ruby, PHP, C#, Swift, Kotlin, Scala, C, C++, Vue, Svelte, and more (19+ extensions mapped)
+**First-class (tree-sitter parsing):** Python, JavaScript/JSX, TypeScript/TSX, Java, Rust, C/C++
+(`.py .pyi .js .jsx .mjs .cjs .ts .tsx .mts .cts .java .rs .c .h .cc .cpp .cxx .hpp .hh .hxx .ipp`).
+For these, `source_parser.py` extracts with real parsers rather than regexes:
+- Symbols with exact line ranges, extended to include decorators, attributes and doc comments:
+  - functions, methods, classes, structs, interfaces, traits, enums, records, macros
+  - C++ out-of-class definitions (`void Box::put()`), Rust `impl` blocks, nested functions
+- Structured imports: Python relative levels, JS `import`/`require`/`import()`/re-exports, Java static/wildcard imports, Rust `use` trees and `mod` declarations, C/C++ `#include "…"` vs `<…>`
+- Call sites per function with their qualifier (`Type::new`, `self.x()`, `obj.method()`, JSX `<Component/>`, `new Foo()`)
+- Entry points: `if __name__ == "__main__"`, `public static void main`, `fn main`, `int main`, `createRoot(…)`, `app.listen(…)`
 
-### Framework Detection
-- **Frontend**: React, Vue.js, Angular, Svelte, Next.js, Nuxt.js, Ember.js, Gatsby
-- **Backend**: FastAPI, Django, Flask, Express.js, Spring, Spring Boot, ASP.NET, Laravel, Ruby on Rails
+**Basic (regex):** Go, Ruby, PHP, C#, Swift, Kotlin, Scala, Vue, Svelte. Tree-sitter missing → all languages fall back to the regex/`ast` analysis.
 
-### Database Detection
-- **SQL**: PostgreSQL, MySQL, SQLite, MariaDB, Oracle
-- **NoSQL**: MongoDB, CouchDB, Redis, Elasticsearch, DynamoDB
-- **ORM**: SQLAlchemy, Prisma, TypeORM, Sequelize, Hibernate
-
-### Dependency Extraction
-- JavaScript/TypeScript: `package.json`
-- Python: `requirements.txt`, `Pipfile`, `pyproject.toml`
-- Go: `go.mod`
-- Rust: `Cargo.toml`
-
-### Entry Point Detection
-- Pattern matching on file names (main, app, index, server, etc.)
-- Language-specific patterns (manage.py for Django, wsgi.py for Python, etc.)
+### File Dependency Analysis (`import_resolver.py`)
+- **Python:** dotted modules (src-layout aware), relative imports (`from ..core import X`), submodule imports (`from pkg import mod`)
+- **JS/TS:**
+  - relative paths with extension probing, including TS ESM `./x.js` → `x.ts`
+  - index files
+  - tsconfig/jsconfig `baseUrl` + `paths` (JSONC)
+  - monorepo workspace packages
+- **Java:** fully-qualified names via each file's `package`; static and wildcard imports; same-package type references (no import needed)
+- **Rust:**
+  - `mod foo;` → `foo.rs` / `foo/mod.rs`
+  - `use crate::/self::/super::` paths
+  - other crates in the same Cargo workspace
+- **C/C++:** `#include "…"` relative to the file, then by path suffix; `<…>` only when it matches a project header (e.g. `<fmt/core.h>`)
+- Unresolved imports are listed as external. The graph also detects circular dependencies and builds a reverse dependency map.
 
 ### Call Graph Analysis
-- Extracts function calls across supported languages
-- Builds caller/callee relationships
-- Shows called_by reverse relationships
+- Edges come from parsed call sites, resolved in this order:
+  1. same file / same class for `self`/`this`
+  2. the qualifying type (`Config::new` → `impl Config`) or module/package (`click.echo` → `click/`)
+  3. imported files, including what barrel files (`__init__.py`, `index.ts`, `mod.rs`, `lib.rs`) re-export
+  4. otherwise only unambiguous matches, so common names don't fan out into false edges
+- Cross-boundary tracing: frontend `fetch`/`axios` → backend routes for:
+  - Express, FastAPI, Flask, Django, Spring
+  - Actix Web, Rocket, Axum
+- DB query hints
 
-### File Dependency Analysis
-- Maps file-level import/export relationships
-- Resolves relative imports
-- Tracks external vs internal dependencies
-- Detects circular dependencies
-- Builds reverse dependency map
+### Dependency Extraction (`project_manifests.py`)
+- **Python:** `requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.cfg`, `setup.py`
+  - `pyproject.toml` covers PEP 621, PEP 735 groups, Poetry, PDM and uv
+- **JavaScript/TypeScript:** every `package.json`
+- **Java/Kotlin:**
+  - `pom.xml`: dependencies, parent, plugins
+  - `build.gradle(.kts)`: configurations + plugins
+  - `gradle/libs.versions.toml`
+- **Rust:** every `Cargo.toml`, including workspace, dev, build and target-specific dependencies
+- **C/C++:**
+  - `CMakeLists.txt`: `find_package`, `FetchContent`, CPM, `pkg_check_modules`
+  - `conanfile.txt/.py`, `vcpkg.json`, `meson.build`
+- **Go:** `go.mod`
+
+### Build & Run Commands (Quick Start)
+For every project root (nested roots of the same ecosystem collapse into the top one; test/example dirs are skipped), `build_systems` lists install / build / run / test commands, ordered by how much code each build covers:
+- **Python:** uv / Poetry / PDM / pipenv / pip (from lockfiles). Run target, first match wins:
+  1. Django `manage.py`
+  2. `[project.scripts]`
+  3. FastAPI → `uvicorn module:app`
+  4. Flask
+  5. Streamlit
+  6. `python -m pkg`
+  7. a `__main__` file
+- **JS/TS:** npm / pnpm / yarn / bun from lockfiles; `dev`/`start`/`build`/`test` scripts
+- **Rust:** `cargo build/run/test`; workspaces use `--workspace` and `cargo run -p <bin crate>`
+- **Java:** `./mvnw` or `./gradlew` when present; `spring-boot:run` / `bootRun` / `quarkus:dev` / Gradle `application` run; Android `assembleDebug`
+- **C/C++:**
+  - CMake configure + build; conan / vcpkg toolchains
+  - `ctest` when tests are registered
+  - run target = the first non-test `add_executable`
+  - meson, make
+- **Go:** `go run .` / `./cmd/<app>`
+
+### Framework Detection
+- **Frontend:**
+  - JS: React, Next.js, Vue.js, Nuxt.js, Angular, Svelte/SvelteKit, Remix, Astro, SolidJS, React Native/Expo, Vite, Tailwind CSS
+  - Rust: Tauri, Leptos, Yew, Dioxus, egui, Bevy
+  - Java: JavaFX, Android, Jetpack Compose
+  - C++: Qt, Dear ImGui, wxWidgets, SDL, SFML, GLFW
+  - Unreal Engine
+  - Python: Streamlit, Gradio, Dash
+- **Backend:**
+  - Python: FastAPI, Django, Flask, aiohttp, Tornado, Sanic, Litestar, Celery
+  - JS: Express.js, NestJS, Koa, Hapi, Fastify, Hono
+  - Java: Spring / Spring Boot, Quarkus, Micronaut, Vert.x, Javalin, Jakarta EE
+  - Rust: Actix Web, Axum, Rocket, Warp, Tokio, tonic
+  - C++: Drogon, Crow, oat++, Pistache, Boost
+  - Go: Gin, Fiber, Echo
+  - Ruby on Rails, Laravel
+- Backends and databases are detected from **runtime** dependencies only. A server framework that appears only in devDependencies (e.g. a test server) doesn't count. Ecosystems without source files in the repo are ignored.
+
+### Database Detection
+- **SQL:** PostgreSQL, MySQL/MariaDB, SQLite, H2, Oracle
+- **NoSQL / KV:** MongoDB, Redis, Elasticsearch, RocksDB, LevelDB, Sled, Firebase, Supabase
+- **Sources:**
+  - npm / PyPI / Maven / crates.io drivers
+  - C++ libraries (libpqxx, hiredis, …)
+  - Prisma schemas
+  - sqlx/diesel feature flags
+  - docker-compose and `.env` files
+
+### Entry Point Detection
+- **Strong signals:**
+  - parsed `main` functions / `__main__` guards
+  - Rust crate roots (`src/main.rs`, `src/lib.rs`, `src/bin/*`)
+  - Django / WSGI / ASGI files
+  - `package.json` `main`/`module`/`bin`
+  - `pyproject` `[project.scripts]`
+- **Name conventions** (`index`, `app`, `server`, …) only for JS/TS/Python/Go-style projects, and never inside tests/examples.
+- **Order:** application code first, then tests/examples.
+
+### Tests
+`server/tests/test_language_support.py` runs one realistic mini-project per language through the full analyzer: symbols, import resolution, call graph, manifests, frameworks, databases, entry points, build commands, and the chunker. Run with `cd server && pip install -r requirements-dev.txt && pytest`.
 
 ---
 

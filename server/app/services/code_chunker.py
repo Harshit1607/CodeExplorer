@@ -1,10 +1,11 @@
 """
 Split source files into symbol-level chunks for embedding.
 
-Python files are chunked with the `ast` module (exact function / class / method
-boundaries). Every other language uses line-anchored definition regexes as split
-points, which works well enough for JS/TS, Java, Go, Rust, C#, Kotlin, Ruby, PHP, etc.
-Oversized segments are split into overlapping line windows.
+When the file was parsed with tree-sitter (Python, JS/TS, Java, Rust, C/C++), chunks follow
+the parsed symbols exactly: functions, methods, classes, including their doc comments and
+decorators. Large classes / components are split into their members.
+Without parsed symbols, Python falls back to the `ast` module and other languages to
+line-anchored definition regexes. Oversized segments are split into overlapping windows.
 """
 import ast
 import re
@@ -101,7 +102,10 @@ def _nonblank(lines: List[str]) -> int:
 # Chunker
 # --------------------------------------------------------------------------
 class CodeChunker:
-    def chunk_file(self, rel_path: str, content: str, language: str) -> List[CodeChunk]:
+    _SYMBOL_CHUNK_KIND = {"function": "function", "method": "method", "macro": "function"}
+
+    def chunk_file(self, rel_path: str, content: str, language: str,
+                   symbols: Optional[List[dict]] = None) -> List[CodeChunk]:
         if not content or len(content) > MAX_FILE_BYTES:
             return []
         lines = content.splitlines()
@@ -111,7 +115,9 @@ class CodeChunker:
             return []  # minified / generated
 
         segments: Optional[List[Tuple[int, int, Optional[str], str]]] = None
-        if rel_path.endswith(".py"):
+        if symbols:
+            segments = self._symbol_segments(symbols, len(lines))
+        if segments is None and rel_path.endswith(".py"):
             segments = self._python_segments(content, len(lines))
         if segments is None:
             segments = self._regex_segments(lines)
@@ -135,6 +141,48 @@ class CodeChunker:
                     code=code,
                 ))
         return chunks
+
+    # ---- Parsed symbols (tree-sitter) ---------------------------------------
+    def _symbol_segments(self, symbols: List[dict], n_lines: int):
+        syms = sorted((s for s in symbols if s["end_line"] >= s["start_line"]),
+                      key=lambda s: (s["start_line"], -s["end_line"]))
+        if not syms:
+            return None
+
+        # Containment forest by line ranges
+        roots, stack = [], []
+        for s in syms:
+            node = {"s": s, "children": []}
+            while stack and (s["start_line"] > stack[-1]["s"]["end_line"] or s["end_line"] > stack[-1]["s"]["end_line"]):
+                stack.pop()
+            (stack[-1]["children"] if stack else roots).append(node)
+            stack.append(node)
+
+        defs: List[Tuple[int, int, Optional[str], str]] = []
+
+        def emit(node):
+            s = node["s"]
+            name = f"{s['parent']}.{s['name']}" if s.get("parent") else s["name"]
+            kind = self._SYMBOL_CHUNK_KIND.get(s["kind"], "class")
+            start, end = s["start_line"], min(s["end_line"], n_lines)
+            if end - start + 1 > MAX_CHUNK_LINES and node["children"]:
+                # Large class / component: its members become chunks; the rest keeps its identity
+                cursor = start
+                for child in node["children"]:
+                    c = child["s"]
+                    if c["start_line"] > cursor:
+                        defs.append((cursor, c["start_line"] - 1, name, kind))
+                    emit(child)
+                    cursor = max(cursor, c["end_line"] + 1)
+                if cursor <= end:
+                    defs.append((cursor, end, name, kind))
+            else:
+                defs.append((start, end, name, kind))
+
+        for r in roots:
+            emit(r)
+        defs.sort()
+        return self._fill_gaps(defs, n_lines)
 
     # ---- Python: exact boundaries via AST ----------------------------------
     def _python_segments(self, content: str, n_lines: int):

@@ -8,3 +8,10 @@ httpx
 requests
 numpy
 fastembed
+tree-sitter>=0.25
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-rust
+tree-sitter-cpp

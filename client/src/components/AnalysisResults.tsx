@@ -139,6 +139,7 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
               readme={state.quickstart?.readme}
               packageManager={state.quickstart?.package_manager}
               runScripts={state.quickstart?.run_scripts}
+              buildSystems={state.quickstart?.build_systems}
             />
           )}
 
