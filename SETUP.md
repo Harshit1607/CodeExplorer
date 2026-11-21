@@ -4,7 +4,7 @@ Complete setup instructions for running CodeExplorer locally.
 
 ## System Requirements
 
-- **Python**: 3.9 or higher
+- **Python**: 3.10 or higher (3.11+ recommended; `pyproject.toml` / `Cargo.toml` parsing uses `tomllib`)
 - **Node.js**: 18.0 or higher
 - **Git**: Latest version
 - **Operating System**: Windows, macOS, or Linux
@@ -42,19 +42,34 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Expected dependencies:
-- fastapi
-- uvicorn
-- gitpython
-- pydantic
-- python-multipart
-- toml
+Main dependencies:
+- fastapi, uvicorn, gitpython, httpx, requests, python-dotenv, toml
+- groq (chat and AI report)
+- fastembed, numpy (local embeddings for semantic search)
+- tree-sitter + grammars: `tree-sitter-python`, `tree-sitter-javascript`, `tree-sitter-typescript`, `tree-sitter-java`, `tree-sitter-rust`, `tree-sitter-cpp`
 
-#### 2.3 Verify Installation
+#### 2.3 Configure Environment Variables
 
 ```bash
-python -c "import fastapi; print('FastAPI installed successfully')"
+cp .env.example .env
 ```
+
+Set `GROQ_API_KEY` (free key at https://console.groq.com). Optionally set `GITHUB_TOKEN` to raise the GitHub API limit. `.env.example` documents all other settings (embedding model, sessions, chat, rate limits).
+
+#### 2.4 Verify Installation
+
+```bash
+python -c "import fastapi, tree_sitter, tree_sitter_python; print('Backend dependencies OK')"
+```
+
+#### 2.5 Run the Tests (optional)
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+This runs one sample project per language (Python, TypeScript, Java, Rust, C++) through the analyzer. Expected: `6 passed`.
 
 ### Step 3: Frontend Setup
 
@@ -71,10 +86,11 @@ npm install
 ```
 
 This will install:
-- Next.js 15
-- React 19
+- Vite 5
+- React 18
 - TypeScript
 - Tailwind CSS
+- D3.js, ReactFlow, Recharts
 - Axios
 
 #### 3.3 Configure Environment Variables
@@ -87,7 +103,7 @@ cp .env.example .env.local
 
 Edit `.env.local` and set:
 ```
-NEXT_PUBLIC_API_URL=http://localhost:8000
+VITE_API_URL=http://localhost:8000
 ```
 
 ### Step 4: Running the Application
@@ -119,11 +135,9 @@ npm run dev
 
 Expected output:
 ```
-▲ Next.js 15.5.9
-- Local:        http://localhost:3000
-- Network:      http://192.168.x.x:3000
+  VITE v5.x.x  ready in 500 ms
 
-✓ Ready in 3.4s
+  ➜  Local:   http://localhost:3000/
 ```
 
 ### Step 5: Verify Setup
@@ -139,6 +153,7 @@ Expected output:
    - Click "Analyze Repository"
    - Wait for analysis to complete
    - Browse results across different tabs
+   - The **Quick Start** tab should show `pip` / `python` commands for the repo
 
 ## Troubleshooting
 
@@ -156,11 +171,27 @@ pip install -r requirements.txt
 ```bash
 uvicorn app.main:app --reload --port 8001
 ```
-Then update `NEXT_PUBLIC_API_URL` in `.env.local` to `http://localhost:8001`
+Then update `VITE_API_URL` in `.env.local` to `http://localhost:8001`
 
 **Problem**: Git clone fails with authentication error
 - **Solution**: Make sure the repository URL is valid and accessible
-- For private repos, you'll need to configure Git credentials
+- Only public repositories are supported
+
+**Problem**: Analysis only shows basic results for Python / JS / Java / Rust / C++ (no exact symbols, fewer file dependencies)
+- **Solution**: tree-sitter is missing, so the analyzer fell back to regex analysis. Reinstall the dependencies inside the virtual environment:
+```bash
+pip install -r requirements.txt
+python -c "import tree_sitter_python"
+```
+
+**Problem**: `pip install` fails on tree-sitter or fastembed
+- **Solution**: Check `python --version`. These packages need Python 3.10+.
+
+**Problem**: Chat or AI report says the API key is missing
+- **Solution**: Set `GROQ_API_KEY` in `server/.env` and restart the server
+
+**Problem**: `429 Too Many Requests` / "rate limited"
+- **Solution**: Wait for the `Retry-After` time, or relax the limits for local development in `server/.env` (`RATE_LIMIT_ENABLED=false`)
 
 ### Frontend Issues
 
@@ -175,7 +206,7 @@ npm install
 **Problem**: Port 3000 already in use
 - **Solution**: Either kill the process or use a different port
 ```bash
-npm run dev -- -p 3001
+npm run dev -- --port 3001
 ```
 
 **Problem**: "Failed to fetch" error when analyzing
@@ -202,7 +233,7 @@ npm run dev -- -p 3001
 
 Both servers support hot reload:
 - **Backend**: FastAPI will reload on `.py` file changes
-- **Frontend**: Next.js will reload on `.tsx`, `.ts`, `.css` file changes
+- **Frontend**: Vite will hot-reload on `.tsx`, `.ts`, `.css` file changes
 
 ### API Documentation
 
@@ -219,19 +250,22 @@ CodeExplorer/
 ├── server/
 │   ├── venv/           # Virtual environment (git ignored)
 │   ├── workspace/      # Cloned repos (git ignored)
-│   └── app/            # Application code
+│   ├── app/            # Application code
+│   └── tests/          # pytest suite
 └── client/
     ├── node_modules/   # Dependencies (git ignored)
-    ├── .next/          # Build output (git ignored)
-    └── app/            # Application code
+    ├── dist/           # Build output (git ignored)
+    └── src/            # Application code
 ```
 
 ## Next Steps
 
 1. **Explore the API**: Try different endpoints at `/docs`
 2. **Test with Various Repos**: Analyze repositories of different sizes and languages
-3. **Customize the UI**: Modify components in `client/components/`
+3. **Customize the UI**: Modify components in `client/src/components/`
 4. **Add Features**: Extend the backend analyzers in `server/app/services/`
+   - New language: add its grammar to `source_parser.py` (an `_Extractor` subclass) and its import rules to `import_resolver.py`
+   - New build tool / manifest: `project_manifests.py`
 
 ## Getting Help
 
@@ -243,19 +277,21 @@ CodeExplorer/
 
 For production deployment:
 
-1. **Backend**: Use production ASGI server
+1. **Backend**: Run a **single** worker. Sessions, vector indexes and rate limits are kept in memory.
 ```bash
-gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker
+pip install -r requirements.txt   # includes tree-sitter grammars
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+Behind a reverse proxy, set `RATE_LIMIT_PROXY_HOPS=1` so rate limits apply per real client.
 
-2. **Frontend**: Build optimized version
+2. **Frontend**: Build the static site and serve `client/dist/` with any static host
 ```bash
 npm run build
-npm start
+npm run preview   # local check of the production build
 ```
 
 3. **Environment**: Set production environment variables
-4. **Security**: Configure CORS, rate limiting, and authentication
+4. **Security**: Configure CORS and review the rate limits in `.env` (see `docs/TechSpecs.md` §9)
 5. **Monitoring**: Add logging and error tracking
 
 ---
