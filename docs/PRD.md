@@ -41,11 +41,14 @@ There is no free tool that provides automated, architecture-level understanding 
 - **Streaming Analysis Pipeline** — Real-time progress updates via Server-Sent Events (SSE) in 4 stages (Meta, Scan, Deep Analysis, AI Reporting)
 - **Concurrent Processing Engine** — Multi-threaded static analysis (8 workers) for high-speed scanning
 - Single public GitHub repository analysis via URL input
-- Comprehensive static code analysis (19+ languages)
-- Framework detection (React, Vue, Angular, Django, FastAPI, Express, Spring, etc.)
-- Database detection (PostgreSQL, MongoDB, Redis, SQLite, etc.)
-- Dependency extraction from package managers (npm, pip, cargo, go modules)
-- Entry point and key file identification
+- **Multi-language parsing**:
+  - First-class (tree-sitter): Python, JavaScript/TypeScript, Java, Rust, C/C++. Exact functions, classes, imports and call sites.
+  - Basic (regex): Go, Ruby, PHP, C#, Swift, Kotlin, Scala, Vue, Svelte.
+- **Import resolution per language**: tsconfig paths, monorepo workspaces, Java packages, Cargo workspaces, `#include`
+- **Framework detection**: React, Vue, Angular, Next.js, Django, FastAPI, Flask, Express, Spring Boot, Quarkus, Actix Web, Axum, Tauri, Qt, and more
+- **Database detection**: PostgreSQL, MySQL, MongoDB, Redis, SQLite, and more, based on runtime dependencies only (dev/test-only packages don't count)
+- **Dependency extraction**: pip / Poetry / uv / PDM / Pipfile, npm, Maven, Gradle, Cargo, CMake, Conan, vcpkg, Meson, Go modules
+- **Entry point and key file identification**: `main` functions, crate roots, `package.json` / `pyproject` scripts, and naming conventions
 
 ### Visualizations
 - **Architecture Diagram** — Layered architecture view (Frontend, API, Services, Data, etc.) using ReactFlow with component nodes, database nodes, and weighted edges showing dependency strength
@@ -57,14 +60,14 @@ There is no free tool that provides automated, architecture-level understanding 
 
 ### AI-Powered Features
 - **AI Architecture Report** — Automated high-level overview, component analysis, and structural insights generated as the final pipeline stage
-- **Repository Chat** — Conversational AI interface (powered by Groq API) for asking questions about the codebase. Includes suggested questions, chat history, intelligent context building with file prioritization, and error handling with rate-limit awareness
-- **Semantic Search** — Concept-based code search using 50+ concept categories. Search by meaning (e.g., "auth" finds authentication, login, JWT, OAuth), with suggested searches, relevance scoring, and type filtering
+- **Repository Chat (RAG)** — Conversational AI interface (powered by Groq API). Each question retrieves the relevant code (named symbols/files, vector similarity, call-graph callers), and answers cite their sources with links to exact lines. Includes suggested questions, chat history, and rate-limit handling
+- **Semantic Search** — Hybrid search: local vector embeddings combined with concept-based keyword matching (50+ concept categories, e.g. "auth" finds authentication, login, JWT, OAuth). Includes relevance scoring, mode toggle and type filtering. Code chunks follow real function/class boundaries
 
 ### Developer Onboarding
 - **Quick Start Guide** — Auto-generated setup and installation instructions including:
   - Primary language and framework detection
-  - Package manager suggestion (npm, yarn, pip, poetry, cargo, etc.)
-  - Install and run commands
+  - Build tool detection from lockfiles and wrappers (npm/pnpm/yarn/bun, pip/uv/Poetry/PDM/pipenv, Maven/Gradle, Cargo, CMake/Conan/vcpkg/Meson, Go)
+  - Ready-to-run **install / build / run / test** commands for each project in the repo (monorepos get one card per project)
   - Docker and Docker Compose support
   - Makefile detection
   - Environment setup instructions
@@ -74,7 +77,7 @@ There is no free tool that provides automated, architecture-level understanding 
 ### User Experience
 - **Global Search Bar** — Searchable index of files, functions, and classes with keyboard shortcut (Ctrl+K), type filtering, and smart sorting
 - **Dark/Light Mode** — Theme toggle with localStorage persistence and system preference detection
-- **Tabbed Dashboard** — 12-tab interface organizing all analysis results
+- **Tabbed Dashboard** — 13-tab interface organizing all analysis results
 - **Responsive Design** — Clean UI with smooth transitions
 
 ---
@@ -82,7 +85,8 @@ There is no free tool that provides automated, architecture-level understanding 
 ## 6. Success Metrics
 
 - Accurate identification of entry points and key files
-- Correct framework and database detection
+- Correct framework and database detection across Python, JS/TS, Java, Rust and C/C++ projects
+- Generated build/run commands work as-is for common project types
 - Zero hallucinated responses in chat (grounded in repository content)
 - Clear explanation of repository structure and architecture
 - Analysis completes within reasonable time for small–medium repos
@@ -96,7 +100,7 @@ There is no free tool that provides automated, architecture-level understanding 
 - Chat powered by Groq free tier (28k character context limit, rate limiting)
 - Must restrict chat explanations strictly to repository content
 - Public repositories only
-- One repository analyzed at a time
+- Per-client rate limits and a cap on concurrent analyses (protects the shared Groq quota and server CPU)
 
 ---
 
@@ -107,5 +111,5 @@ There is no free tool that provides automated, architecture-level understanding 
 - Multiple repository comparison
 - Saved analysis history and session persistence
 - IDE plugins
-- Additional language support for deeper analysis
+- Tree-sitter parsing for more languages (Go, C#, Kotlin, ...)
 - Export analysis reports (PDF, Markdown)
