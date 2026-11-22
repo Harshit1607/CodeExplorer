@@ -84,7 +84,7 @@ class _CloneProgress(RemoteProgress):
 class StreamingPipeline:
     def __init__(self, repo_url: str, session_id: Optional[str] = None):
         self.repo_url = repo_url.strip().rstrip("/")
-        self.repo_id = session_id or str(uuid.uuid4())
+        self.repo_id = str(uuid.UUID(session_id)) if session_id else str(uuid.uuid4())
 
         base = os.environ.get("TEMP", "C:\\temp") if os.name == "nt" else "/tmp"
         self.base_dir = os.path.join(base, "codeexplorer")

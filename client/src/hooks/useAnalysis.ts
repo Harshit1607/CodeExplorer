@@ -106,7 +106,10 @@ export function useAnalysis() {
 
     let sessionId = sessionStorage.getItem(`codeexplorer_session_${repoUrl}`);
     if (!sessionId) {
-      sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+      sessionId = crypto.randomUUID
+        ? crypto.randomUUID()
+        : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c =>
+            (Number(c) ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))).toString(16));
       sessionStorage.setItem(`codeexplorer_session_${repoUrl}`, sessionId);
     }
     sessionStorage.setItem('codeexplorer_last_repo', repoUrl);

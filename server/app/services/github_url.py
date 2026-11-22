@@ -5,10 +5,8 @@ The client (`client/src/lib/githubUrl.ts`) applies the same rule, so anything th
 accepts the server accepts too. Accepted forms, all normalized to `https://github.com/<owner>/<repo>`:
 
   https://github.com/owner/repo          http://github.com/owner/repo
-  https://www.github.com/owner/repo      github.com/owner/repo
-  https://github.com/owner/repo.git      https://github.com/owner/repo/
-  https://github.com/owner/repo/tree/<ref>/<path>   (also /blob/...; the ref and path are dropped)
-  ...plus any ?query or #fragment, which is dropped
+  https://www.github.com/owner/repo      https://github.com/owner/repo/
+  https://github.com/owner/repo.git      https://github.com/owner/repo/tree/<ref>/<path>  (ref and path dropped)
 """
 import re
 
@@ -16,11 +14,10 @@ INVALID_URL_MESSAGE = ("Please enter a valid GitHub repository URL "
                        "(e.g., https://github.com/user/repo)")
 
 _GITHUB_URL_RE = re.compile(
-    r"^(?:https?://)?(?:www\.)?github\.com/"
+    r"^https?://(?:www\.)?github\.com/"
     r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/"
     r"(?P<repo>[\w.-]+?)(?:\.git)?"
-    r"(?:/(?:(?:tree|blob)/[^?#]*)?)?"
-    r"(?:[?#].*)?$",
+    r"(?:/tree/[^?#]+)?/?$",
     re.IGNORECASE | re.ASCII,
 )
 

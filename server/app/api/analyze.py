@@ -33,12 +33,21 @@ def _rejected_stream(message: str, retry_after: Optional[int] = None) -> Streami
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
+def _is_session_id(value: str) -> bool:
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
 @router.get("/analyze/stream")
 async def analyze_stream(request: Request, repo: str = "", session_id: str = None):
     try:
         repo = normalize_github_url(repo)
     except ValueError as e:
         return _rejected_stream(str(e))
+    if session_id and not _is_session_id(session_id):
+        return _rejected_stream("Invalid session id.")
 
     pipeline = sessions.get(session_id)
     if pipeline and pipeline.repo_url != repo:

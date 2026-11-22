@@ -6,6 +6,7 @@ browser's EventSource can actually read.
 import asyncio
 import json
 import time
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ from app.core import config
 from app.main import app
 from app.services.github_url import normalize_github_url
 from app.services.session_store import sessions
-from app.services.streaming_pipeline import format_sse
+from app.services.streaming_pipeline import StreamingPipeline, format_sse
 
 CANONICAL = "https://github.com/pallets/itsdangerous"
 
@@ -27,17 +28,12 @@ CANONICAL = "https://github.com/pallets/itsdangerous"
     "http://github.com/pallets/itsdangerous",
     "https://www.github.com/pallets/itsdangerous",
     "http://www.github.com/pallets/itsdangerous/",
-    "github.com/pallets/itsdangerous",
-    "www.github.com/pallets/itsdangerous",
     "https://GitHub.com/pallets/itsdangerous",
     "https://github.com/pallets/itsdangerous.git",
     "https://github.com/pallets/itsdangerous.git/",
     "https://github.com/pallets/itsdangerous/tree/main",
     "https://github.com/pallets/itsdangerous/tree/main/src/itsdangerous",
     "https://github.com/pallets/itsdangerous/tree/feature/x/src/",
-    "https://github.com/pallets/itsdangerous/blob/main/README.md",
-    "https://github.com/pallets/itsdangerous?tab=readme-ov-file",
-    "https://github.com/pallets/itsdangerous#readme",
 ])
 def test_accepted_forms_normalize_to_canonical(raw):
     assert normalize_github_url(raw) == CANONICAL
@@ -66,6 +62,11 @@ def test_dots_and_underscores_in_names(raw, expected):
     "https://github.com/-bad/repo",
     "https://github.com/pallets/its dangerous",
     "file:///etc/passwd",
+    "github.com/pallets/itsdangerous",
+    "www.github.com/pallets/itsdangerous",
+    "https://github.com/pallets/itsdangerous/blob/main/README.md",
+    "https://github.com/pallets/itsdangerous?tab=readme-ov-file",
+    "https://github.com/pallets/itsdangerous#readme",
 ])
 def test_rejected_forms(raw):
     with pytest.raises(ValueError):
@@ -78,7 +79,8 @@ def _sse_events(text: str) -> list:
 
 def test_invalid_url_is_reported_as_sse_error_event():
     client = TestClient(app)
-    resp = client.get("/api/analyze/stream", params={"repo": "https://gitlab.com/a/b", "session_id": "bad-url"})
+    session_id = str(uuid.uuid4())
+    resp = client.get("/api/analyze/stream", params={"repo": "https://gitlab.com/a/b", "session_id": session_id})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
     (event,) = _sse_events(resp.text)
@@ -86,7 +88,7 @@ def test_invalid_url_is_reported_as_sse_error_event():
     assert event["data"]["fatal"] is True
     assert "valid GitHub repository URL" in event["data"]["message"]
     assert "rate_limited" not in event["data"]
-    assert sessions.get("bad-url") is None
+    assert sessions.get(session_id) is None
 
 
 def test_missing_repo_param_is_reported_as_sse_error_event():
@@ -126,10 +128,32 @@ class _FakePipeline:
 def test_browser_style_urls_start_an_analysis_of_the_canonical_repo(raw, monkeypatch):
     monkeypatch.setattr(analyze_api, "StreamingPipeline", _FakePipeline)
     monkeypatch.setattr(config, "RATE_LIMIT_ENABLED", False)
-    session_id = f"norm-{abs(hash(raw))}"
+    session_id = str(uuid.uuid4())
     resp = TestClient(app).get("/api/analyze/stream", params={"repo": raw, "session_id": session_id})
     assert resp.status_code == 200
     events = _sse_events(resp.text)
     assert events[-1]["event"] == "analysis_complete"
     assert events[-1]["data"]["repo"] == CANONICAL
     assert sessions.get(session_id).repo_url == CANONICAL
+
+
+TRAVERSAL_SESSION_IDS = ["/tmp/victim", "../../victim", "..", "a/../../victim", "not-a-uuid"]
+
+
+@pytest.mark.parametrize("session_id", TRAVERSAL_SESSION_IDS)
+def test_non_uuid_session_id_is_rejected_before_any_pipeline_is_created(session_id, monkeypatch):
+    created = []
+    monkeypatch.setattr(analyze_api, "StreamingPipeline", lambda *a: created.append(a))
+    monkeypatch.setattr(config, "RATE_LIMIT_ENABLED", False)
+    resp = TestClient(app).get("/api/analyze/stream", params={"repo": CANONICAL, "session_id": session_id})
+    (event,) = _sse_events(resp.text)
+    assert event["event"] == "error"
+    assert event["data"]["fatal"] is True
+    assert created == []
+    assert sessions.get(session_id) is None
+
+
+@pytest.mark.parametrize("session_id", TRAVERSAL_SESSION_IDS)
+def test_pipeline_refuses_clone_path_outside_its_base_dir(session_id):
+    with pytest.raises(ValueError):
+        StreamingPipeline(CANONICAL, session_id)
