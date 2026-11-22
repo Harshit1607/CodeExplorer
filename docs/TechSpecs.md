@@ -87,7 +87,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 
 ## 6. API Endpoints
 
-- `GET /api/analyze/stream?repo=&session_id=` — Initiates/reconnects to a streaming analysis session (reconnecting with the same `session_id` replays history). `repo` may be any GitHub repo link (`http`, `www.`, `.git`, `/tree/<ref>/...`); it is normalized to `https://github.com/<owner>/<repo>`, and anything else is rejected with a single fatal `error` event. Returns a Server-Sent Event (SSE) stream broadcasting:
+- `GET /api/analyze/stream?repo=&session_id=` — Initiates/reconnects to a streaming analysis session (reconnecting with the same `session_id` replays history). `repo` may be any GitHub repo link (`http`, `www.`, `.git`, `/tree/<ref>/...`); it is normalized to `https://github.com/<owner>/<repo>`, and anything else is rejected with a single fatal `error` event. `session_id`, when given, must be a canonical UUID (otherwise the same fatal `error` event). Returns a Server-Sent Event (SSE) stream broadcasting:
   - `clone_progress`, `repo_meta`: Clone progress and GitHub repository data
   - `scan_started`, `file_complexity_batch`: File count, then batched file-level metrics (LOC, functions, classes, imports)
   - `file_tree`: Full repository file structure
