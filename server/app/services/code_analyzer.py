@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any, Set
 from app.services import source_parser
 from app.services import project_manifests
 from app.services.import_resolver import ImportResolver
+from app.services.fs_utils import inside_repo, read_repo_text
 
 
 class CodeAnalyzer:
@@ -199,6 +200,11 @@ class CodeAnalyzer:
             "build_systems": self._build_systems(),
         }
 
+    def _read(self, path) -> Optional[str]:
+        """Text of a repository file (path absolute or relative to the repo root), or None when
+        it is missing or is a symlink that leads outside the repository."""
+        return read_repo_text(self.repo_path, path)
+
     def _keep_dir(self, name: str) -> bool:
         return name not in self.SKIP_DIRS and not name.endswith(".egg-info")
 
@@ -212,7 +218,7 @@ class CodeAnalyzer:
                 if name.lower() in self.IGNORE_FILES:
                     continue
                 ext = Path(name).suffix.lower()
-                if ext in self.SOURCE_EXTENSIONS:
+                if ext in self.SOURCE_EXTENSIONS and inside_repo(self.repo_path, os.path.join(root, name)):
                     result.append(Path(root) / name)
 
         return result
@@ -223,7 +229,9 @@ class CodeAnalyzer:
     def _analyze_file(self, path: Path) -> Optional[Dict]:
         """Analyze a single source file."""
         try:
-            content = path.read_text(encoding="utf-8", errors="ignore")
+            content = self._read(path)
+            if content is None:
+                return None  # missing, or a symlink that leads outside the repository
             ext = path.suffix.lower()
 
             # Store full content for call graph extraction (will be cleared after analysis)
@@ -478,15 +486,10 @@ class CodeAnalyzer:
         elif 'pom.xml' in config_files or 'build.gradle' in config_files:
             # Check if pom.xml or build.gradle contains spring
             for cfg in ['pom.xml', 'build.gradle']:
-                cfg_path = self.repo_path / cfg
-                if cfg_path.exists():
-                    try:
-                        content = cfg_path.read_text().lower()
-                        if 'spring-boot' in content or 'springframework' in content:
-                            backend.append('Spring Boot')
-                            break
-                    except:
-                        pass
+                content = (self._read(cfg) or '').lower()
+                if 'spring-boot' in content or 'springframework' in content:
+                    backend.append('Spring Boot')
+                    break
 
         # Go frameworks - only detect if we actually have Go files
         has_go_files = any(meta.get('language') == 'Go' for meta in self.files.values())
@@ -502,25 +505,13 @@ class CodeAnalyzer:
 
         # Ruby on Rails
         if 'gemfile' in config_files:
-            gemfile_path = self.repo_path / "Gemfile"
-            if gemfile_path.exists():
-                try:
-                    content = gemfile_path.read_text().lower()
-                    if 'rails' in content:
-                        backend.append('Ruby on Rails')
-                except:
-                    pass
+            if 'rails' in (self._read("Gemfile") or '').lower():
+                backend.append('Ruby on Rails')
 
         # PHP - Laravel
         if 'artisan' in config_files or 'composer.json' in config_files:
-            composer_path = self.repo_path / "composer.json"
-            if composer_path.exists():
-                try:
-                    content = composer_path.read_text().lower()
-                    if 'laravel' in content:
-                        backend.append('Laravel')
-                except:
-                    pass
+            if 'laravel' in (self._read("composer.json") or '').lower():
+                backend.append('Laravel')
 
         self._detect_more_frameworks(frontend, backend, config_files)
 
@@ -685,63 +676,45 @@ class CodeAnalyzer:
         # sqlx / diesel / sea-orm pick the database through features: look at Cargo.toml text
         if self.dep_sets.get("rust", set()) & {"sqlx", "diesel", "sea-orm"}:
             for rel in self._manifests().get("cargo", []):
-                try:
-                    text = (self.repo_path / rel).read_text(encoding="utf-8", errors="ignore").lower()
-                except OSError:
-                    continue
+                text = (self._read(rel) or "").lower()
                 for needle, db in (("postgres", "PostgreSQL"), ("mysql", "MySQL"), ("sqlite", "SQLite")):
                     if needle in text:
                         databases.add(db)
 
         # Check Prisma schema for database type
-        prisma_schema = self.repo_path / "prisma" / "schema.prisma"
-        if prisma_schema.exists():
-            try:
-                content = prisma_schema.read_text().lower()
-                if 'postgresql' in content or 'postgres' in content:
-                    databases.add('PostgreSQL')
-                elif 'mysql' in content:
-                    databases.add('MySQL')
-                elif 'mongodb' in content:
-                    databases.add('MongoDB')
-                elif 'sqlite' in content:
-                    databases.add('SQLite')
-            except:
-                pass
+        content = (self._read("prisma/schema.prisma") or '').lower()
+        if 'postgresql' in content or 'postgres' in content:
+            databases.add('PostgreSQL')
+        elif 'mysql' in content:
+            databases.add('MySQL')
+        elif 'mongodb' in content:
+            databases.add('MongoDB')
+        elif 'sqlite' in content:
+            databases.add('SQLite')
 
         # Check docker-compose for database services
         for compose_file in ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']:
-            compose_path = self.repo_path / compose_file
-            if compose_path.exists():
-                try:
-                    content = compose_path.read_text().lower()
-                    if 'postgres' in content:
-                        databases.add('PostgreSQL')
-                    if 'mysql' in content or 'mariadb' in content:
-                        databases.add('MySQL')
-                    if 'mongo' in content:
-                        databases.add('MongoDB')
-                    if 'redis' in content:
-                        databases.add('Redis')
-                except:
-                    pass
+            content = (self._read(compose_file) or '').lower()
+            if 'postgres' in content:
+                databases.add('PostgreSQL')
+            if 'mysql' in content or 'mariadb' in content:
+                databases.add('MySQL')
+            if 'mongo' in content:
+                databases.add('MongoDB')
+            if 'redis' in content:
+                databases.add('Redis')
 
         # Check .env files for database URLs
         for env_file in ['.env', '.env.example', '.env.local', '.env.development']:
-            env_path = self.repo_path / env_file
-            if env_path.exists():
-                try:
-                    content = env_path.read_text().lower()
-                    if 'mongodb' in content or 'mongo_uri' in content:
-                        databases.add('MongoDB')
-                    if 'postgres' in content or 'postgresql' in content:
-                        databases.add('PostgreSQL')
-                    if 'mysql' in content:
-                        databases.add('MySQL')
-                    if 'redis' in content:
-                        databases.add('Redis')
-                except:
-                    pass
+            content = (self._read(env_file) or '').lower()
+            if 'mongodb' in content or 'mongo_uri' in content:
+                databases.add('MongoDB')
+            if 'postgres' in content or 'postgresql' in content:
+                databases.add('PostgreSQL')
+            if 'mysql' in content:
+                databases.add('MySQL')
+            if 'redis' in content:
+                databases.add('Redis')
 
         return list(databases)
 
@@ -787,7 +760,7 @@ class CodeAnalyzer:
         resolver_exts = ("", ".js", ".ts", ".mjs", ".cjs", ".tsx", ".jsx", "/index.js", "/index.ts")
         for rel in self._manifests().get("npm", []):
             try:
-                pkg = json.loads((self.repo_path / rel).read_text(encoding="utf-8"))
+                pkg = json.loads(self._read(rel) or "")
             except Exception:
                 continue
             base = str(Path(rel).parent).replace("\\", "/")
@@ -807,7 +780,7 @@ class CodeAnalyzer:
         for rel in self._manifests().get("pyproject", []):
             try:
                 import tomllib
-                data = tomllib.loads((self.repo_path / rel).read_text(encoding="utf-8"))
+                data = tomllib.loads(self._read(rel) or "")
             except Exception:
                 continue
             base = str(Path(rel).parent).replace("\\", "/")
@@ -1058,17 +1031,13 @@ class CodeAnalyzer:
         readme_patterns = ['README.md', 'readme.md', 'README', 'readme.txt', 'README.rst']
 
         for pattern in readme_patterns:
-            readme_path = self.repo_path / pattern
-            if readme_path.exists():
-                try:
-                    content = readme_path.read_text(encoding='utf-8', errors='ignore')
-                    return {
-                        'file': pattern,
-                        'content': content[:5000],
-                        'full_length': len(content)
-                    }
-                except:
-                    continue
+            content = self._read(pattern)
+            if content is not None:
+                return {
+                    'file': pattern,
+                    'content': content[:5000],
+                    'full_length': len(content)
+                }
 
         return None
 
@@ -1087,47 +1056,45 @@ class CodeAnalyzer:
                 return manager
 
         # Check if package.json has packageManager field
-        pkg_json_path = self.repo_path / 'package.json'
-        if pkg_json_path.exists():
+        pkg_text = self._read('package.json')
+        if pkg_text is not None:
             try:
-                with open(pkg_json_path, 'r', encoding='utf-8') as f:
-                    pkg = json.load(f)
-                    if 'packageManager' in pkg:
-                        pm = pkg['packageManager']
-                        if 'pnpm' in pm:
-                            return 'pnpm'
-                        elif 'yarn' in pm:
-                            return 'yarn'
-                        elif 'bun' in pm:
-                            return 'bun'
-                        elif 'npm' in pm:
-                            return 'npm'
+                pkg = json.loads(pkg_text)
+                if 'packageManager' in pkg:
+                    pm = pkg['packageManager']
+                    if 'pnpm' in pm:
+                        return 'pnpm'
+                    elif 'yarn' in pm:
+                        return 'yarn'
+                    elif 'bun' in pm:
+                        return 'bun'
+                    elif 'npm' in pm:
+                        return 'npm'
             except:
                 pass
 
         # Default to npm if package.json exists
-        if pkg_json_path.exists():
+        if pkg_text is not None:
             return 'npm'
 
         return None
 
     def _extract_run_scripts(self) -> Optional[Dict[str, str]]:
         """Extract scripts from package.json."""
-        pkg_json_path = self.repo_path / 'package.json'
-        if not pkg_json_path.exists():
+        pkg_text = self._read('package.json')
+        if pkg_text is None:
             return None
 
         try:
-            with open(pkg_json_path, 'r', encoding='utf-8') as f:
-                pkg = json.load(f)
-                scripts = pkg.get('scripts', {})
-                if scripts:
-                    # Return important scripts
-                    important_scripts = {}
-                    for key in ['start', 'dev', 'serve', 'build', 'test', 'lint']:
-                        if key in scripts:
-                            important_scripts[key] = scripts[key]
-                    return important_scripts if important_scripts else None
+            pkg = json.loads(pkg_text)
+            scripts = pkg.get('scripts', {})
+            if scripts:
+                # Return important scripts
+                important_scripts = {}
+                for key in ['start', 'dev', 'serve', 'build', 'test', 'lint']:
+                    if key in scripts:
+                        important_scripts[key] = scripts[key]
+                return important_scripts if important_scripts else None
         except:
             pass
 

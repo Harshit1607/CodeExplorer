@@ -2,23 +2,14 @@ import asyncio
 import uuid
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from app.services.repo_ingestor import clone_repo
-from app.services.repo_scanner import scan_repo
-from app.services.code_analyzer import CodeAnalyzer
 from app.core import config
-from app.core.rate_limit import check as rate_check, rate_limit, too_many_message
+from app.core.rate_limit import check as rate_check, too_many_message
 from app.services.streaming_pipeline import StreamingPipeline, HEARTBEAT, format_sse
 from app.services.session_store import sessions
-from app.services.fs_utils import remove_tree
 
 router = APIRouter()
 
 HEARTBEAT_SECONDS = 15
-
-
-class RepoRequest(BaseModel):
-    repo_url: str
 
 
 def _rejected_stream(message: str, retry_after: int) -> StreamingResponse:
@@ -111,24 +102,3 @@ def analyze_status(session_id: str):
         "search_index": pipeline.vector_index.info(),
     }
 
-
-@router.post("/analyze", dependencies=[rate_limit("analyze")])
-def analyze_repo(data: RepoRequest):
-    """
-    Clone and fully analyze a GitHub repository (non-streaming).
-    """
-    path = None
-    try:
-        path = clone_repo(data.repo_url)
-        scan_results = scan_repo(path)
-        analyzer = CodeAnalyzer(path)
-        structure_analysis = analyzer.analyze()
-        return {
-            "message": "Repository cloned and analyzed successfully",
-            "repository_url": data.repo_url,
-            "scan_results": scan_results,
-            "structure_analysis": structure_analysis
-        }
-    finally:
-        if path:
-            remove_tree(path)

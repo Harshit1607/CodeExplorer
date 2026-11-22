@@ -102,7 +102,6 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - `search_index_progress` / `search_index_ready`: Vector index build status (runs concurrently)
   - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done
 - `GET /api/analyze/{session_id}/status` — Pipeline and search-index status for a session.
-- `POST /api/analyze` — Legacy endpoint for full analysis (synchronous).
 - `POST /api/search` — Hybrid semantic search. Body: `query`, `session_id` (preferred), optional `mode` (`hybrid` | `semantic` | `keyword`), `limit`, and optional `analysis_data` fallback. Returns ranked results with match type, similarity, line range, and code snippet.
 - `GET /api/search/status?session_id=` — Vector index status.
 - `POST /api/chat` — Retrieval-augmented Q&A. Body: `question`, `session_id` (preferred), optional `chat_history`, optional slim `analysis_data` fallback. Returns `response`, `sources` (`file`, `start_line`, `end_line`, `symbol`, `reason`) and `retrieval` (`semantic` | `files`).
@@ -277,7 +276,7 @@ Per-client sliding-window limits (in-memory, `app/core/rate_limit.py`), configur
 
 | Rule | Default | Applies to |
 |------|---------|------------|
-| `RATE_LIMIT_ANALYZE` | `3/minute;20/hour` | Starting a **new** analysis (`/api/analyze/stream`, `POST /api/analyze`, `/api/structure`). Reconnecting to an existing session is free. |
+| `RATE_LIMIT_ANALYZE` | `3/minute;20/hour` | Starting a **new** analysis (`/api/analyze/stream`). Reconnecting to an existing session is free. |
 | `RATE_LIMIT_CHAT` | `6/minute;100/day` | `POST /api/chat` (the Groq free tier allows 1000 requests/day for the whole server) |
 | `RATE_LIMIT_SEARCH` | `60/minute` | `POST /api/search` |
 | `MAX_CONCURRENT_ANALYSES` | `3` | Global cap on running analyses (clone + CPU embedding). Checked before the per-client limit, so a "busy" rejection costs no quota. |

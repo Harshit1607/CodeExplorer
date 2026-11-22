@@ -22,6 +22,8 @@ from collections import defaultdict
 from pathlib import PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from app.services.fs_utils import read_repo_text
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover  (Python < 3.11)
@@ -165,7 +167,7 @@ class ImportResolver:
                 full = os.path.join(root, name)
                 if name in ("tsconfig.json", "jsconfig.json") or re.match(r"tsconfig\..+\.json$", name):
                     try:
-                        cfg = _load_jsonc(open(full, encoding="utf-8").read())
+                        cfg = _load_jsonc(read_repo_text(self.repo_path, full) or "{}")
                         opts = cfg.get("compilerOptions") or {}
                         base_url = opts.get("baseUrl")
                         paths = opts.get("paths") or {}
@@ -176,7 +178,7 @@ class ImportResolver:
                         pass
                 elif name == "package.json":
                     try:
-                        pkg_name = json.load(open(full, encoding="utf-8")).get("name")
+                        pkg_name = json.loads(read_repo_text(self.repo_path, full) or "{}").get("name")
                         if pkg_name:
                             self.js_packages[pkg_name] = rel
                     except Exception:
@@ -300,7 +302,7 @@ class ImportResolver:
                 name = None
                 if tomllib is not None:
                     try:
-                        data = tomllib.loads(open(os.path.join(root, "Cargo.toml"), encoding="utf-8").read())
+                        data = tomllib.loads(read_repo_text(self.repo_path, root, "Cargo.toml") or "")
                         name = ((data.get("lib") or {}).get("name") or (data.get("package") or {}).get("name"))
                     except Exception:
                         pass
