@@ -83,6 +83,14 @@ function describe(eventName: string, data: any): string | null {
   }
 }
 
+/** Forget the remembered repo so a reload after a fatal error doesn't retry it forever. */
+function forgetRepo(repoUrl: string) {
+  sessionStorage.removeItem(`codeexplorer_session_${repoUrl}`);
+  if (sessionStorage.getItem('codeexplorer_last_repo') === repoUrl) {
+    sessionStorage.removeItem('codeexplorer_last_repo');
+  }
+}
+
 export function useAnalysis() {
   const [state, setState] = useState<AnalysisState>(initialState);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -208,6 +216,7 @@ export function useAnalysis() {
               next.error = data.message;
               next.status = 'error';
               es.close();
+              forgetRepo(repoUrl);
             }
             break;
         }
@@ -220,6 +229,7 @@ export function useAnalysis() {
         console.error('SSE Connection Closed:', err);
         setState(s => {
           if (s.status === 'complete' || s.status === 'error') return s;
+          forgetRepo(repoUrl);
           return { ...s, status: 'error', error: 'Connection to server lost. Please try again.' };
         });
       } else if (es.readyState === EventSource.CONNECTING) {

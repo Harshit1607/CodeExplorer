@@ -1,45 +1,46 @@
+import type { AnalysisState } from '../hooks/useAnalysis';
+
 interface OverviewSectionProps {
   repositoryUrl: string;
-  scanResults: any;
-  structureAnalysis: any;
+  analysis: AnalysisState;
 }
 
 export default function OverviewSection({
   repositoryUrl,
-  scanResults,
-  structureAnalysis,
+  analysis,
 }: OverviewSectionProps) {
-  const frameworks = structureAnalysis?.frameworks || { frontend: [], backend: [] };
-  const databases = structureAnalysis?.databases || [];
+  const frameworks = analysis.frameworks || { frontend: [], backend: [] };
+  const databases = analysis.databases || [];
+  const readme = analysis.quickstart?.readme;
 
   const stats = [
     {
       label: 'Total Files',
-      value: structureAnalysis?.total_files || scanResults?.total_files || 0,
+      value: analysis.complexity?.files || 0,
       icon: '📄',
       color: 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300',
     },
     {
       label: 'Languages',
-      value: Object.keys(structureAnalysis?.languages || {}).length,
+      value: Object.keys(analysis.languages || {}).length,
       icon: '💻',
       color: 'bg-sky-100 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300',
     },
     {
       label: 'Entry Points',
-      value: structureAnalysis?.entry_points?.length || 0,
+      value: analysis.entryPoints?.length || 0,
       icon: '🚀',
       color: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-300',
     },
     {
       label: 'Key Files',
-      value: structureAnalysis?.key_files?.length || 0,
+      value: analysis.keyFiles?.length || 0,
       icon: '⭐',
       color: 'bg-yellow-100 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300',
     },
   ];
 
-  const complexityStats = structureAnalysis?.complexity || {};
+  const complexityStats = analysis.complexity || {};
 
   return (
     <div className="space-y-6">
@@ -187,15 +188,15 @@ export default function OverviewSection({
       )}
 
       {/* README Preview */}
-      {structureAnalysis?.readme && (
+      {readme?.content && (
         <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-4 border border-slate-200 dark:border-slate-600">
           <h4 className="text-md font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
             <span>📖</span>
             README Preview
           </h4>
           <div className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap max-h-64 overflow-y-auto font-mono bg-white dark:bg-slate-800 p-3 rounded">
-            {structureAnalysis.readme.content?.substring(0, 500)}
-            {structureAnalysis.readme.content?.length > 500 && '...'}
+            {readme.content.substring(0, 500)}
+            {readme.content.length > 500 && '...'}
           </div>
         </div>
       )}

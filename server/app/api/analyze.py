@@ -1,40 +1,47 @@
 import asyncio
 import uuid
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from app.core import config
 from app.core.rate_limit import check as rate_check, too_many_message
 from app.services.streaming_pipeline import StreamingPipeline, HEARTBEAT, format_sse
 from app.services.session_store import sessions
+from app.services.github_url import normalize_github_url
 
 router = APIRouter()
 
 HEARTBEAT_SECONDS = 15
 
 
-def _rejected_stream(message: str, retry_after: int) -> StreamingResponse:
+def _rejected_stream(message: str, retry_after: Optional[int] = None) -> StreamingResponse:
     """
     EventSource can't read the body/status of a non-200 response (it just reports a
     generic error), so rejections are sent as a single fatal SSE `error` event.
+    `retry_after` marks a rate-limit / busy rejection that is worth retrying later.
     """
-    event = format_sse("error", "Pipeline", 0, {
-        "message": message, "fatal": True, "rate_limited": True, "retry_after": retry_after,
-    })
+    data = {"message": message, "fatal": True}
+    headers = {"Cache-Control": "no-cache"}
+    if retry_after is not None:
+        data.update(rate_limited=True, retry_after=retry_after)
+        headers["Retry-After"] = str(retry_after)
+    event = format_sse("error", "Pipeline", 0, data)
 
     async def gen():
         yield event
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "Retry-After": str(retry_after)})
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
 @router.get("/analyze/stream")
-async def analyze_stream(repo: str, request: Request, session_id: str = None):
-    if not repo or not repo.startswith("https://github.com/"):
-        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+async def analyze_stream(request: Request, repo: str = "", session_id: str = None):
+    try:
+        repo = normalize_github_url(repo)
+    except ValueError as e:
+        return _rejected_stream(str(e))
 
     pipeline = sessions.get(session_id)
-    if pipeline and pipeline.repo_url != repo.strip().rstrip("/"):
+    if pipeline and pipeline.repo_url != repo:
         pipeline = None  # session id reused for a different repo
 
     if pipeline:

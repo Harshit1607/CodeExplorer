@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { normalizeGithubUrl } from '../lib/githubUrl';
 
 interface RepositoryInputProps {
   onAnalysisStart: (repoUrl: string) => void;
@@ -16,7 +17,7 @@ export default function RepositoryInput({
   const [repoUrl, setRepoUrl] = useState('');
   const [localError, setLocalError] = useState('');
 
-  const error = externalError || localError;
+  const error = localError || externalError;
 
   // Sync internal state with session storage or clear if idle
   useEffect(() => {
@@ -37,14 +38,15 @@ export default function RepositoryInput({
       return;
     }
 
-    // Basic GitHub URL validation
-    const githubRegex = /^https?:\/\/(www\.)?github\.com\/[\w-]+\/[\w.-]+\/?$/;
-    if (!githubRegex.test(repoUrl.trim())) {
+    // Same rule as the server: www./http/.git/tree-links are accepted and normalized.
+    const normalized = normalizeGithubUrl(repoUrl);
+    if (!normalized) {
       setLocalError('Please enter a valid GitHub repository URL (e.g., https://github.com/user/repo)');
       return;
     }
 
-    onAnalysisStart(repoUrl.trim());
+    setRepoUrl(normalized);
+    onAnalysisStart(normalized);
   };
 
   const getRepoName = (url: string) => {
@@ -59,7 +61,8 @@ export default function RepositoryInput({
     }
   };
 
-  const isIdle = status === 'idle';
+  // A failed analysis shows the form again (with the error and the URL), so there is always a way back.
+  const isIdle = status === 'idle' || status === 'error';
 
   if (!isIdle) {
     return (
@@ -80,17 +83,6 @@ export default function RepositoryInput({
               </h2>
             </div>
           </div>
-          
-          {status === 'error' && error && (
-            <div className="flex-1 max-w-md">
-              <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex items-center gap-3">
-                 <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                 </svg>
-                 <p className="text-sm text-red-500 truncate">{error}</p>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     );
