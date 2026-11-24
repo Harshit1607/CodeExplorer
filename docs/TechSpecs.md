@@ -298,7 +298,7 @@ Analyses and clones are also bounded:
 
 Request hardening:
 
-- **CORS:** `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser origins allowed to call the API (`*` = any). When empty (the default) only `localhost` / `127.0.0.1` on any port are allowed, which covers local development. Set it to the frontend's origin in production. `GET /api/analyze/stream` (an `EventSource`, which skips the CORS preflight) refuses requests from any other `Origin` with **403** before starting work. Requests without an `Origin` header are refused when `Sec-Fetch-Site` is `cross-site` or `same-site` (e.g. an `<img>` on another site); curl, typed URLs and same-origin requests are accepted.
+- **CORS:** `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser origins allowed to call the API (`*` = any). When empty (the default) only `localhost` / `127.0.0.1` / `[::1]` on any port are allowed, which covers local development. Set it to the frontend's origin in production. `GET /api/analyze/stream` (an `EventSource`, which skips the CORS preflight) refuses requests from any other `Origin` with **403** before starting work. Requests without an `Origin` header are refused when `Sec-Fetch-Site` is `cross-site` or `same-site` (e.g. an `<img>` on another site); curl, typed URLs and same-origin requests are accepted.
 - **Body size:** request bodies above `MAX_REQUEST_BODY_MB` (default `8`, `0` = no limit) are rejected with **413**.
 - **Chat history:** only `user` and `assistant` messages from the client's `chat_history` are passed to the LLM; any other role (e.g. an injected `system` message) is dropped.
 - **Errors:** unexpected failures (chat, AI report, pipeline) return a generic message; details are only written to the server log.
