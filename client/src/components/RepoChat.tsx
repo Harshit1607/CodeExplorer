@@ -203,8 +203,9 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
         setRetryCountdown(errorInfo.retryAfter);
       }
 
-      // Remove the user message if we failed
+      // Take the question out of the history and put it back in the input box, so it can be resent.
       setMessages(prev => prev.slice(0, -1));
+      setInput(prev => (prev.trim() ? prev : userMessage));
     } finally {
       setIsLoading(false);
       inputRef.current?.focus();
