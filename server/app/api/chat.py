@@ -1,3 +1,4 @@
+import traceback
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -58,6 +59,7 @@ def chat(data: ChatRequest):
         return ChatResponse(**result)
     except HTTPException:
         raise
-    except Exception as e:
-        print(f"Unexpected chat error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Details stay in the server log; the client only gets a generic message.
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Chat failed because of an internal error. Please try again.")

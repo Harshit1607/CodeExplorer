@@ -1,5 +1,7 @@
 """Central runtime configuration, read from environment variables."""
 import os
+import tempfile
+from typing import List
 
 
 def _int(name: str, default: int) -> int:
@@ -16,12 +18,28 @@ def _bool(name: str, default: bool) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _list(name: str) -> List[str]:
+    return [v.strip().rstrip("/") for v in os.getenv(name, "").split(",") if v.strip()]
+
+
 SERVER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # --- Pipeline -------------------------------------------------------------
 ANALYSIS_WORKERS = _int("ANALYSIS_WORKERS", 8)
 SCAN_BATCH_SIZE = _int("SCAN_BATCH_SIZE", 64)          # files per file_complexity_batch event
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN") or None        # optional: raises GitHub API rate limit
+# Where repositories are cloned. Leftover clone folders in it are deleted at startup.
+CLONE_DIR = os.getenv("CLONE_DIR") or os.path.join(tempfile.gettempdir(), "codeexplorer")
+CLONE_TIMEOUT_SECONDS = _int("CLONE_TIMEOUT_SECONDS", 300)   # 0 disables
+MAX_REPO_SIZE_MB = _int("MAX_REPO_SIZE_MB", 1500)  # GitHub-reported size (whole history); 0 disables
+# A running analysis nobody is watching is cancelled after this many seconds.
+ANALYSIS_ABANDON_GRACE_SECONDS = _int("ANALYSIS_ABANDON_GRACE_SECONDS", 10)
+
+# --- HTTP -----------------------------------------------------------------
+# Comma-separated browser origins allowed to call the API, or "*" for any.
+# Empty (default): http(s)://localhost and 127.0.0.1 on any port (local development).
+CORS_ALLOWED_ORIGINS = _list("CORS_ALLOWED_ORIGINS")
+MAX_REQUEST_BODY_MB = _int("MAX_REQUEST_BODY_MB", 8)        # 0 disables
 
 # --- Rate limiting (per client, in-memory) --------------------------------
 # Format: "N/unit" joined with ";" (unit: s|min|minute|h|hour|d|day, e.g. "5/10min"). "off" disables a rule.
@@ -31,6 +49,7 @@ RATE_LIMIT_CHAT = os.getenv("RATE_LIMIT_CHAT", "6/minute;100/day")         # Gro
 RATE_LIMIT_SEARCH = os.getenv("RATE_LIMIT_SEARCH", "60/minute")
 RATE_LIMIT_PROXY_HOPS = _int("RATE_LIMIT_PROXY_HOPS", 0)   # trusted reverse proxies in front of the server
 MAX_CONCURRENT_ANALYSES = _int("MAX_CONCURRENT_ANALYSES", 3)  # global; each clones + embeds on the CPU
+MAX_ANALYSES_PER_CLIENT = _int("MAX_ANALYSES_PER_CLIENT", 1)  # running analyses per client; 0 disables
 
 # --- Sessions -------------------------------------------------------------
 SESSION_TTL_SECONDS = _int("SESSION_TTL_SECONDS", 60 * 60)  # keep finished sessions for 1h

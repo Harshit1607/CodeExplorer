@@ -154,7 +154,7 @@ export default function RepositoryInput({
             • https://github.com/facebook/react
           </li>
           <li className="text-xs text-[var(--text-muted)]">
-            • https://github.com/vercel/next.js
+            • https://github.com/pallets/flask
           </li>
         </ul>
       </div>

@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from groq import Groq
 
 from app.core import config
-from app.services.llm import completion_kwargs, groq_api_key
+from app.services.llm import completion_kwargs, groq_api_key, map_llm_error
 from app.services.rag_retriever import RepoRetriever
 
 OVERVIEW_MAX_CHARS = 4500
@@ -280,15 +280,28 @@ SYSTEM_PROMPT = """You are an expert code analyst helping a developer understand
 - Be concise and use Markdown."""
 
 
+CHAT_HISTORY_ROLES = ("user", "assistant")
+
+
+def clean_history(chat_history: Optional[list]) -> List[dict]:
+    """
+    The last CHAT_HISTORY_MESSAGES turns, keeping only `user` and `assistant` messages:
+    the history comes from the client, and a `system` entry would override our instructions.
+    """
+    kept = [m for m in (chat_history or [])
+            if isinstance(m, dict) and m.get("role") in CHAT_HISTORY_ROLES]
+    return kept[-config.CHAT_HISTORY_MESSAGES:]
+
+
 def chat_about_repo(question: str, analysis_data: Optional[dict], chat_history: Optional[list] = None,
                     pipeline=None) -> dict:
     client = get_groq_client()
-    history = (chat_history or [])[-config.CHAT_HISTORY_MESSAGES:]
+    history = clean_history(chat_history)
     context, sources, mode = build_chat_context(question, history, analysis_data, pipeline)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT.format(context=context)}]
     for msg in history:
-        messages.append({"role": msg.get("role", "user"), "content": (msg.get("content") or "")[:HISTORY_MESSAGE_MAX_CHARS]})
+        messages.append({"role": msg["role"], "content": (msg.get("content") or "")[:HISTORY_MESSAGE_MAX_CHARS]})
     messages.append({"role": "user", "content": question})
 
     try:
@@ -300,33 +313,4 @@ def chat_about_repo(question: str, analysis_data: Optional[dict], chat_history: 
     except HTTPException:
         raise
     except Exception as e:
-        raise _map_llm_error(e)
-
-
-def _map_llm_error(e: Exception) -> HTTPException:
-    error_msg = str(e)
-    low = error_msg.lower()
-    print(f"Chat API Error: {error_msg}")
-    status = getattr(e, "status_code", None)
-
-    if status == 413 or "request too large" in low or "reduce your message size" in low:
-        return HTTPException(400, "The question context is too large for the AI's rate limit. Try a more specific question.")
-    if status == 429 or "rate_limit" in low:
-        # Upstream (Groq) quota is shared by every user of this server; pass its back-off through.
-        retry_after = None
-        try:
-            retry_after = int(float(e.response.headers.get("retry-after")))  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        headers = {"Retry-After": str(max(1, retry_after))} if retry_after else None
-        wait = f" Please try again in {retry_after}s." if retry_after else " Please wait a moment and try again."
-        return HTTPException(429, "The AI service's rate limit was reached." + wait, headers=headers)
-    if status == 401 or "invalid_api_key" in low or "invalid api key" in low:
-        return HTTPException(401, "AI service authentication failed. Please check the API key.")
-    if "model_not_found" in low or "does not exist" in low:
-        return HTTPException(503, f"AI model '{config.GROQ_MODEL}' is unavailable. Set GROQ_MODEL to a model your key can access.")
-    if "context_length_exceeded" in low or "maximum context length" in low:
-        return HTTPException(400, "The question context is too long. Try asking about specific files.")
-    if status == 503 or "service unavailable" in low:
-        return HTTPException(503, "AI service is temporarily unavailable. Please try again later.")
-    return HTTPException(500, f"Chat failed: {error_msg[:200]}")
+        raise map_llm_error(e)
