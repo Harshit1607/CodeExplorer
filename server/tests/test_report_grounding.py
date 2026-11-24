@@ -221,7 +221,20 @@ def test_citation_format():
             "x.py:3.12, node:18-alpine.")
     assert [k for k, *_ in find_citations(text)] == [
         "app/main.py:5-10", "main.py:3", "app/api.py:7-9", "Dockerfile:2", "app/x.py:1-4"]
-    assert find_citations("app/[slug]/page.tsx:2") == [("app/[slug]/page.tsx:2", "app/[slug]/page.tsx", 2, 2)]
+    assert find_citations("app/[slug]/page.tsx:2") == [("app/[slug]/page.tsx:2", "app/[slug]/page.tsx", 2, 2, 0, 21)]
+
+
+def test_citation_spans_cover_non_ascii_paths_in_ui_string_offsets():
+    # The UI slices report strings with these offsets, so they are JS (UTF-16) indices:
+    # "é" is one unit, "🚀" is a surrogate pair (two units). The whole non-ASCII path is the citation.
+    sources = [{"file": "app/café.py", "start_line": 1, "end_line": 9, "symbol": None, "reason": "entry_point"}]
+    text = "🚀 Starts in app/café.py:3, not lib/naïve.py:4."
+    out = check_citations({"architecture_summary": text}, sources)
+    assert out["citations"] == {"app/café.py:3": {"file": "app/café.py", "start_line": 3, "end_line": 3}}
+    assert out["spans"] == {text: [
+        {"at": 13, "to": 26, "verified": True, "file": "app/café.py", "start_line": 3, "end_line": 3},
+        {"at": 32, "to": 46, "verified": False},
+    ]}
 
 
 def test_check_citations_verifies_against_the_excerpts_sent():

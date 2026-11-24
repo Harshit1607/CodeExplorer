@@ -1,5 +1,5 @@
 import React, { Fragment } from 'react';
-import { sourceLink, splitCitations } from '../lib/citations';
+import { sourceLink } from '../lib/github';
 
 interface ReportSource {
   file: string;
@@ -24,6 +24,17 @@ interface ReportGrounding {
   citations: Record<string, { file: string; start_line: number; end_line: number }>;
   unverified: string[];
   uncited_sections: string[];
+  spans: Record<string, CitationSpan[]>;
+}
+
+/** Where a citation sits in a report string (UTF-16 offsets, i.e. JS string indices). */
+interface CitationSpan {
+  at: number;
+  to: number;
+  verified: boolean;
+  file?: string;
+  start_line?: number;
+  end_line?: number;
 }
 
 interface AIReportData {
@@ -81,41 +92,51 @@ function groundingSummary(g?: ReportGrounding): string {
 export default function AIReportSection({ report, isLoading, repoMeta, pending, searchIndex }: AIReportSectionProps) {
   const grounding = report?.grounding;
 
-  /** Plain text with `path:line` citations: verified ones link to GitHub, others are flagged. */
+  /** A citation the server found: verified ones link to GitHub, others are flagged. */
+  const renderCitation = (span: CitationSpan, label: string, key: React.Key): React.ReactNode => {
+    if (!span.verified || !span.file || !span.start_line) {
+      return (
+        <span key={key} title="Not in the code excerpts this report was written from"
+              className="font-mono text-[0.85em] text-[var(--text-muted)] underline decoration-dotted">
+          {label}
+        </span>
+      );
+    }
+    const href = sourceLink(repoMeta, span.file, span.start_line, span.end_line);
+    if (!href) return <code key={key} className="font-mono text-[0.85em]">{label}</code>;
+    return (
+      <a key={key} href={href} target="_blank" rel="noreferrer" title={`${span.file} lines ${span.start_line}-${span.end_line}`}
+         className="font-mono text-[0.85em] text-[var(--text-primary)] underline underline-offset-2 decoration-primary-400 hover:decoration-2">
+        {label}
+      </a>
+    );
+  };
+
+  /** Plain text with the citation spans the server located in it (`grounding.spans[text]`). */
   const renderText = (text: string): React.ReactNode => {
     if (!grounding) return text;
+    const spans = grounding.spans?.[text] || [];
+    let pos = 0;
     // Inline `code` spans first; a span that is exactly a citation is still a citation.
     return text.split(/(`[^`\n]+`)/g).map((segment, i) => {
-      const isCode = segment.length > 2 && segment.startsWith('`') && segment.endsWith('`');
-      const inner = isCode ? segment.slice(1, -1) : segment;
-      const parts = splitCitations(inner);
-      if (isCode && !(parts.length === 1 && parts[0].kind === 'citation')) {
-        return <code key={i} className="px-1 py-0.5 rounded bg-black/10 dark:bg-white/10 font-mono text-[0.85em]">{inner}</code>;
+      const from = pos;
+      pos += segment.length;
+      const inside = spans.filter(s => s.at >= from && s.to <= pos);
+      if (segment.length > 2 && segment.startsWith('`') && segment.endsWith('`')) {
+        const only = inside.length === 1 && inside[0].at === from + 1 && inside[0].to === pos - 1;
+        return only
+          ? renderCitation(inside[0], segment.slice(1, -1), i)
+          : <code key={i} className="px-1 py-0.5 rounded bg-black/10 dark:bg-white/10 font-mono text-[0.85em]">{segment.slice(1, -1)}</code>;
       }
-      return (
-        <Fragment key={i}>
-          {parts.map((part, j) => {
-            if (part.kind === 'text') return <Fragment key={j}>{part.text}</Fragment>;
-            const hit = grounding.citations?.[part.key];
-            const href = hit ? sourceLink(repoMeta, hit.file, hit.start_line, hit.end_line) : null;
-            if (hit && href) {
-              return (
-                <a key={j} href={href} target="_blank" rel="noreferrer" title={`${hit.file} lines ${hit.start_line}-${hit.end_line}`}
-                   className="font-mono text-[0.85em] text-[var(--text-primary)] underline underline-offset-2 decoration-primary-400 hover:decoration-2">
-                  {part.text}
-                </a>
-              );
-            }
-            if (hit) return <code key={j} className="font-mono text-[0.85em]">{part.text}</code>;
-            return (
-              <span key={j} title="Not in the code excerpts this report was written from"
-                    className="font-mono text-[0.85em] text-[var(--text-muted)] underline decoration-dotted">
-                {part.text}
-              </span>
-            );
-          })}
-        </Fragment>
-      );
+      const parts: React.ReactNode[] = [];
+      let last = from;
+      inside.forEach((s, j) => {
+        if (s.at > last) parts.push(text.slice(last, s.at));
+        parts.push(renderCitation(s, text.slice(s.at, s.to), j));
+        last = s.to;
+      });
+      if (last < pos) parts.push(text.slice(last, pos));
+      return <Fragment key={i}>{parts}</Fragment>;
     });
   };
 

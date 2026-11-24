@@ -263,11 +263,17 @@ def _looks_like_file(path: str) -> bool:
     return "/" in path or bool(_FILE_EXT_RE.search(name)) or name.lower() in _EXTENSIONLESS
 
 
-def find_citations(text: str) -> List[Tuple[str, str, int, int]]:
-    """[(key, path, start, end)] for every `path:line` / `path:start-end` in `text`.
-    `key` is the normalised citation (`path:start` or `path:start-end`); the UI uses the same form."""
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def find_citations(text: str) -> List[Tuple[str, str, int, int, int, int]]:
+    """[(key, path, start, end, at, to)] for every `path:line` / `path:start-end` in `text`.
+    `key` is the normalised citation (`path:start` or `path:start-end`); `at`/`to` bound the match
+    in UTF-16 code units, the unit the UI indexes its strings in."""
     out = []
-    for m in CITATION_RE.finditer(text or ""):
+    text = text or ""
+    for m in CITATION_RE.finditer(text):
         path = m.group(1)
         if path.startswith("./"):
             path = path[2:]
@@ -276,7 +282,8 @@ def find_citations(text: str) -> List[Tuple[str, str, int, int]]:
         start = int(m.group(2))
         end = int(m.group(3)) if m.group(3) else start
         key = f"{path}:{start}-{end}" if m.group(3) else f"{path}:{start}"
-        out.append((key, path, start, max(start, end)))
+        at = _utf16_len(text[:m.start()])
+        out.append((key, path, start, max(start, end), at, at + _utf16_len(m.group(0))))
     return out
 
 
@@ -296,6 +303,8 @@ def check_citations(report: dict, sources: List[dict]) -> dict:
       citations          {key: {file, start_line, end_line}}  verified: they point into a sent excerpt
       unverified         [key]  cited a file or lines the model was not shown
       uncited_sections   sections without a single verified citation
+      spans              {text: [{at, to, verified, file?, start_line?, end_line?}]}  where the
+                         citations sit in each report string (UTF-16 offsets), so the UI does not parse
     A citation by bare file name (`main.py:3`) resolves when exactly one excerpt file has that name.
     """
     ranges: Dict[str, List[Tuple[int, int]]] = {}
@@ -304,19 +313,26 @@ def check_citations(report: dict, sources: List[dict]) -> dict:
     verified: Dict[str, dict] = {}
     unverified: List[str] = []
     uncited: List[str] = []
+    spans: Dict[str, List[dict]] = {}
     for section in REPORT_SECTIONS:
         section_ok = False
         for text in _strings(report.get(section)):
-            for key, path, start, end in find_citations(text):
+            text_spans = []
+            for key, path, start, end, at, to in find_citations(text):
                 file = path if path in ranges else None
                 if file is None:  # partial path or bare file name: accept when unambiguous
                     matches = [p for p in ranges if p.endswith("/" + path)]
                     file = matches[0] if len(matches) == 1 else None
+                span = {"at": at, "to": to, "verified": False}
                 if file and any(start <= e and s <= end for s, e in ranges[file]):
                     verified[key] = {"file": file, "start_line": start, "end_line": end}
+                    span.update(verified[key], verified=True)
                     section_ok = True
                 elif key not in unverified:
                     unverified.append(key)
+                text_spans.append(span)
+            if text_spans:
+                spans[text] = text_spans
         if not section_ok and report.get(section):
             uncited.append(section)
-    return {"citations": verified, "unverified": unverified, "uncited_sections": uncited}
+    return {"citations": verified, "unverified": unverified, "uncited_sections": uncited, "spans": spans}
