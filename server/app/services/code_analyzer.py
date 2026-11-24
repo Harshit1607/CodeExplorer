@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 
+from app.core import config
 from app.services import source_parser
 from app.services import project_manifests
 from app.services.import_resolver import ImportResolver
@@ -233,16 +234,29 @@ class CodeAnalyzer:
             if content is None:
                 return None  # missing, or a symlink that leads outside the repository
             ext = path.suffix.lower()
+            n_lines = len(content.splitlines())
+            base = {
+                "extension": ext,
+                "language": self.LANGUAGE_NAMES.get(ext, "Unknown"),
+                "lines": n_lines,
+                "size": path.stat().st_size,
+            }
+
+            # Minified bundles and huge generated files: count them, but don't parse them. Their
+            # "functions" are noise, and the regex fallback (no tree-sitter above its size cap)
+            # takes seconds per file. Without stored content they are also left out of the
+            # call graph and the search index.
+            skipped = self._skip_reason(content, n_lines)
+            if skipped:
+                return {**base, "imports": [], "functions": [], "classes": [], "has_main": False,
+                        "content": "", "content_truncated": True, "skipped": skipped}
 
             # Store full content for call graph extraction (will be cleared after analysis)
             rel = str(path.relative_to(self.repo_path)).replace("\\", "/")
             self._file_contents[rel] = content
 
             meta = {
-                "extension": ext,
-                "language": self.LANGUAGE_NAMES.get(ext, "Unknown"),
-                "lines": len(content.splitlines()),
-                "size": path.stat().st_size,
+                **base,
                 "imports": [],
                 "functions": [],
                 "classes": [],
@@ -280,6 +294,15 @@ class CodeAnalyzer:
             return meta
         except Exception:
             return None
+
+    @staticmethod
+    def _skip_reason(content: str, n_lines: int) -> Optional[str]:
+        if len(content) > config.MAX_ANALYZE_BYTES:
+            return "too large"
+        # Small one-liners are fine to parse; only bundles of real size count as minified.
+        if len(content) > 5000 and len(content) / max(n_lines, 1) > config.MAX_AVG_LINE_LENGTH:
+            return "minified"
+        return None
 
     def _analyze_python(self, content: str) -> Dict:
         """Analyze Python file."""
@@ -1180,10 +1203,16 @@ class CodeAnalyzer:
         self._link_cross_boundary(call_graph, func_registry, databases)
 
         # Phase 5: Build reverse mapping (called_by)
+        # (a set per callee: `x not in list` is quadratic for functions with thousands of callers)
+        seen_callers: Dict[str, Set[str]] = {}
         for qualified_id, info in call_graph.items():
             for callee_id in info.get('calls', []):
                 if callee_id in call_graph:
-                    if qualified_id not in call_graph[callee_id]['called_by']:
+                    seen = seen_callers.get(callee_id)
+                    if seen is None:
+                        seen = seen_callers[callee_id] = set(call_graph[callee_id]['called_by'])
+                    if qualified_id not in seen:
+                        seen.add(qualified_id)
                         call_graph[callee_id]['called_by'].append(qualified_id)
 
         return call_graph

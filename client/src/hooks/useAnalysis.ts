@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import type { CallGraphSummary } from '../components/CallGraph';
 
 export interface SearchIndexState {
   status: 'idle' | 'building' | 'ready' | 'failed' | 'unavailable';
@@ -16,7 +17,8 @@ export interface AnalysisState {
   frameworks: any;
   databases: any;
   dependencies: any;
-  callGraph: { [key: string]: any };
+  /** Totals only: the graph itself is queried from /api/callgraph/{sessionId}/... */
+  callGraphSummary: CallGraphSummary | null;
   fileDependencies: any;
   complexity: any;
   architecture: any;
@@ -41,7 +43,7 @@ const initialState = (): AnalysisState => ({
   frameworks: null,
   databases: null,
   dependencies: null,
-  callGraph: {},
+  callGraphSummary: null,
   fileDependencies: {},
   complexity: { files: 0, lines: 0, functions: 0, classes: 0, fileList: [] },
   architecture: null,
@@ -78,7 +80,10 @@ function describe(eventName: string, data: any): string | null {
     case 'architecture_ready': return 'Generated architecture';
     case 'quickstart_ready': return 'Generated quick start guide';
     case 'ai_report_ready': return 'AI report ready';
-    case 'analysis_complete': return 'Analysis complete';
+    case 'analysis_complete':
+      return data.cached
+        ? `Loaded the cached analysis of commit ${String(data.commit || '').slice(0, 7)}`
+        : 'Analysis complete';
     default: return null;
   }
 }
@@ -177,7 +182,7 @@ export function useAnalysis() {
             next.fileDependencies = data;
             break;
           case 'call_graph':
-            next.callGraph = data;
+            next.callGraphSummary = data;
             break;
           case 'architecture_ready':
             next.architecture = data;

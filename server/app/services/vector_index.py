@@ -5,6 +5,8 @@ Local embeddings + an in-memory vector index (one per analysis session).
   lazily once per process and shared by every session.
 - The index is a normalised float32 numpy matrix; search is brute-force cosine
   similarity, which takes a few milliseconds for the ~thousands of chunks a repo produces.
+- With the analysis cache, vectors are looked up by a hash of the embedded text first, so
+  chunks that did not change since an earlier analysis (any commit) are not embedded again.
 """
 import os
 import threading
@@ -12,6 +14,7 @@ import time
 from typing import Callable, List, Optional, Tuple
 
 from app.core import config
+from app.services.analysis_cache import AnalysisCache, embedding_key
 from app.services.code_chunker import CodeChunk
 
 try:
@@ -119,6 +122,8 @@ class VectorIndex:
         self.indexed_chunks = 0
         self.truncated = False
         self.build_seconds = 0.0
+        self.reused_chunks = 0     # vectors taken from the embedding cache
+        self.skipped_files = 0     # tests / generated / vendored files left out of the index
 
     @property
     def searchable(self) -> bool:
@@ -138,13 +143,16 @@ class VectorIndex:
             "total_chunks": self.total_chunks,
             "indexed_chunks": self.indexed_chunks,
             "truncated": self.truncated,
+            "reused_chunks": self.reused_chunks,
+            "skipped_files": self.skipped_files,
             "model": config.EMBEDDING_MODEL,
             "build_seconds": round(self.build_seconds, 2),
         }
 
     def build(self, chunks: List[CodeChunk],
-              on_progress: Optional[Callable[[int, int], None]] = None) -> None:
-        """Embed `chunks` (blocking; run in a worker thread)."""
+              on_progress: Optional[Callable[[int, int], None]] = None,
+              cache: Optional[AnalysisCache] = None) -> None:
+        """Embed `chunks` (blocking; run in a worker thread), reusing cached vectors."""
         if not Embedder.is_enabled():
             self.status, self.error = "unavailable", "Vector search disabled"
             return
@@ -158,17 +166,45 @@ class VectorIndex:
         self.status = "building"
         started = time.time()
         try:
-            Embedder.get_model()  # surface load errors before waiting on the semaphore
-            with Embedder._build_semaphore:
-                parts: List["np.ndarray"] = []
-                for i in range(0, len(chunks), self.PUBLISH_EVERY):
-                    batch = chunks[i:i + self.PUBLISH_EVERY]
-                    parts.append(Embedder.embed_documents([c.embedding_text() for c in batch]))
-                    done = i + len(batch)
-                    self._data = (chunks[:done], np.vstack(parts))
-                    self.indexed_chunks = done
-                    if on_progress:
-                        on_progress(done, self.total_chunks)
+            texts = [c.embedding_text() for c in chunks]
+            keys = [embedding_key(config.EMBEDDING_MODEL, t) for t in texts]
+            cached = cache.get_embeddings(keys) if cache else {}
+            # Cached vectors are searchable at once; the rest are embedded and appended.
+            # Rows are written into one preallocated matrix and published as prefix views,
+            # so each snapshot costs no copy of what was embedded before.
+            hits = [i for i, k in enumerate(keys) if k in cached]
+            misses = [i for i, k in enumerate(keys) if k not in cached]
+            order: List[CodeChunk] = []
+            matrix: Optional["np.ndarray"] = None
+
+            def publish(idx: List[int], vecs: "np.ndarray") -> None:
+                nonlocal matrix
+                if matrix is None:
+                    matrix = np.empty((len(chunks), vecs.shape[1]), dtype=np.float32)
+                start = len(order)
+                matrix[start:start + len(idx)] = vecs
+                order.extend(chunks[j] for j in idx)
+                self._data = (order[:], matrix[:len(order)])
+                self.indexed_chunks = len(order)
+                if on_progress:
+                    on_progress(len(order), self.total_chunks)
+
+            self.reused_chunks = len(hits)
+            if hits:
+                publish(hits, np.vstack([cached[keys[i]] for i in hits]))
+            if misses:
+                Embedder.get_model()  # surface load errors before waiting on the semaphore
+                for i in range(0, len(misses), self.PUBLISH_EVERY):
+                    batch = misses[i:i + self.PUBLISH_EVERY]
+                    # Taken per batch, so concurrent builds take turns: a small repository is
+                    # not stuck behind a huge one for minutes.
+                    with Embedder._build_semaphore:
+                        vecs = Embedder.embed_documents([texts[j] for j in batch])
+                    if cache:
+                        cache.put_embeddings((keys[j], vecs[n]) for n, j in enumerate(batch))
+                    publish(batch, vecs)
+            if cache:
+                cache.enforce_limit()
             self.status = "ready"
         except EmbeddingUnavailable as e:
             self.status, self.error = "unavailable", str(e)

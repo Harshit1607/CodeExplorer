@@ -42,8 +42,22 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 EMBEDDING_CACHE_DIR = os.getenv("EMBEDDING_CACHE_DIR", os.path.join(SERVER_DIR, ".cache", "fastembed"))
 EMBEDDING_BATCH_SIZE = _int("EMBEDDING_BATCH_SIZE", 4)       # small batches are fastest on CPU
 EMBEDDING_PRELOAD = _bool("EMBEDDING_PRELOAD", True)     # warm the model at server start
-MAX_INDEX_CHUNKS = _int("MAX_INDEX_CHUNKS", 6000)        # bounds indexing time on huge repos
+MAX_INDEX_CHUNKS = _int("MAX_INDEX_CHUNKS", 10000)       # bounds indexing time on huge repos
 MAX_CONCURRENT_INDEX_BUILDS = _int("MAX_CONCURRENT_INDEX_BUILDS", 1)
+# Tests, generated and vendored files are left out of the search index (unless that leaves nothing).
+INDEX_SKIP_NON_PRIMARY = _bool("INDEX_SKIP_NON_PRIMARY", True)
+
+# --- Analysis cache (finished results + embeddings, keyed by owner/repo@commit-sha) ---
+ANALYSIS_CACHE_ENABLED = _bool("ANALYSIS_CACHE_ENABLED", True)
+ANALYSIS_CACHE_DIR = os.getenv("ANALYSIS_CACHE_DIR", os.path.join(SERVER_DIR, ".cache", "analysis"))
+ANALYSIS_CACHE_MAX_MB = _int("ANALYSIS_CACHE_MAX_MB", 2048)   # analyses + embeddings; LRU eviction
+LS_REMOTE_TIMEOUT_SECONDS = _int("LS_REMOTE_TIMEOUT_SECONDS", 15)  # commit lookup before a cache check
+
+# --- Static analysis --------------------------------------------------------
+# Files above this size, or minified (very long average line), are counted but not parsed:
+# the regex fallback is slow on them and their "functions" are noise.
+MAX_ANALYZE_BYTES = _int("MAX_ANALYZE_BYTES", 1_500_000)
+MAX_AVG_LINE_LENGTH = _int("MAX_AVG_LINE_LENGTH", 250)
 
 # --- LLM (Groq) -----------------------------------------------------------
 # Free tier limit is ~8k tokens/minute *including* the answer, so keep prompts tight.

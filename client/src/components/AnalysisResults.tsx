@@ -1,4 +1,4 @@
-import { useState, useCallback, Fragment } from 'react';
+import { useState, useCallback, useMemo, Fragment } from 'react';
 import OverviewSection from './OverviewSection';
 import QuickStartGuide from './QuickStartGuide';
 import ComplexityAnalysis from './ComplexityAnalysis';
@@ -65,11 +65,12 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
     { id: 'keyfiles', label: 'Key Files', icon: 'grade' },
   ];
 
-  // Reconstruct files dict from complexity fileList
-  const files = state.complexity?.fileList?.reduce((acc: any, curr: any) => {
+  // Reconstruct files dict from complexity fileList (once per list, not on every render)
+  const fileList = state.complexity?.fileList;
+  const files = useMemo(() => (fileList || []).reduce((acc: any, curr: any) => {
     acc[curr.file] = curr;
     return acc;
-  }, {}) || {};
+  }, {}), [fileList]);
 
   return (
     <div className="mt-8 space-y-6">
@@ -181,8 +182,9 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
 
           {activeTab === 'callgraph' && (
             <CallGraph
-              callGraph={state.callGraph || {}}
-              files={files}
+              sessionId={state.sessionId}
+              summary={state.callGraphSummary}
+              isStreaming={state.status === 'streaming' || state.status === 'connecting'}
             />
           )}
 
