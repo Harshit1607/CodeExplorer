@@ -7,6 +7,7 @@ interface ChatSource {
   end_line: number;
   symbol?: string | null;
   reason: string;
+  tag?: 'code' | 'docs' | 'config';
 }
 
 interface Message {
@@ -232,6 +233,7 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
     "Explain how the main entry point works",
     "How does the authentication flow work?",
     "Show me the key functions and explain what they do",
+    "How do I run this locally and deploy it?",
   ];
 
   return (
@@ -299,13 +301,13 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
                     <div className="flex flex-wrap gap-1.5">
                       {msg.sources.map((s, i) => {
                         const href = sourceLink(analysisData?.repoMeta, s);
-                        const label = `${s.file.split('/').pop()}:${s.start_line}-${s.end_line}`;
+                        const label = `${s.tag === 'docs' || s.tag === 'config' ? '📘 ' : ''}${s.file.split('/').pop()}:${s.start_line}-${s.end_line}`;
                         const title = `${s.file}${s.symbol ? ` · ${s.symbol}` : ''} (${s.reason})`;
                         const cls = 'px-2 py-0.5 text-[11px] font-mono rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] text-[var(--text-secondary)]';
                         return href ? (
                           <a key={i} href={href} target="_blank" rel="noreferrer" title={title}
                              className={`${cls} hover:text-primary-600 dark:hover:text-primary-400 hover:border-primary-400`}>
-                            {s.symbol ? `${s.symbol.split('.').pop()} · ` : ''}{label}
+                            {s.symbol && (s.tag ?? 'code') === 'code' ? `${s.symbol.split('.').pop()} · ` : ''}{label}
                           </a>
                         ) : (
                           <span key={i} title={title} className={cls}>{label}</span>

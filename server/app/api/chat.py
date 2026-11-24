@@ -31,6 +31,7 @@ class ChatSource(BaseModel):
     end_line: int
     symbol: Optional[str] = None
     reason: str
+    tag: str = "code"         # code | docs | config
 
 
 class ChatResponse(BaseModel):

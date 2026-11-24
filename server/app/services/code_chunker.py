@@ -25,17 +25,19 @@ class CodeChunk:
     id: str
     file: str
     language: str
-    symbol: Optional[str]     # e.g. "login", "AuthService", "AuthService.login"
-    kind: str                 # function | method | class | module
+    symbol: Optional[str]     # e.g. "login", "AuthService", "AuthService.login"; a heading for docs
+    kind: str                 # function | method | class | module | section (docs) | config
     start_line: int           # 1-based, inclusive
     end_line: int             # 1-based, inclusive
     code: str
+    tag: str = "code"         # code | docs | config  (see doc_files.py)
 
     def embedding_text(self) -> str:
         """Code plus a short header; the path and symbol carry a lot of meaning."""
         header = f"File: {self.file}\n"
         if self.symbol:
-            header += f"{self.kind.capitalize()}: {self.symbol}\n"
+            label = "Section" if self.kind == "section" else self.kind.capitalize()
+            header += f"{label}: {self.symbol}\n"
         return (header + self.code)[:MAX_EMBED_CHARS]
 
     def to_dict(self) -> dict:

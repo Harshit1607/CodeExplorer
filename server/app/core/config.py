@@ -63,6 +63,10 @@ EMBEDDING_BATCH_SIZE = _int("EMBEDDING_BATCH_SIZE", 4)       # small batches are
 EMBEDDING_PRELOAD = _bool("EMBEDDING_PRELOAD", True)     # warm the model at server start
 MAX_INDEX_CHUNKS = _int("MAX_INDEX_CHUNKS", 6000)        # bounds indexing time on huge repos
 MAX_CONCURRENT_INDEX_BUILDS = _int("MAX_CONCURRENT_INDEX_BUILDS", 1)
+# Docs/config files (README, docs/, Dockerfile, compose, CI, .env.example, Makefile) indexed
+# next to the code; capped so they never take more than a small slice of MAX_INDEX_CHUNKS.
+DOC_INDEX_MAX_FILES = _int("DOC_INDEX_MAX_FILES", 150)
+DOC_INDEX_MAX_CHUNKS = _int("DOC_INDEX_MAX_CHUNKS", 300)
 
 # --- LLM (Groq) -----------------------------------------------------------
 # Free tier limit is ~8k tokens/minute *including* the answer, so keep prompts tight.
@@ -71,3 +75,7 @@ GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "low")  # low | mediu
 CHAT_CONTEXT_CHARS = _int("CHAT_CONTEXT_CHARS", 14000)   # repo overview + retrieved code
 CHAT_MAX_TOKENS = _int("CHAT_MAX_TOKENS", 1536)
 CHAT_HISTORY_MESSAGES = _int("CHAT_HISTORY_MESSAGES", 6)
+# AI architecture report: characters of retrieved code excerpts in the prompt, and how long the
+# report waits for the search index to finish before using whatever part is already searchable.
+AI_REPORT_CODE_CHARS = _int("AI_REPORT_CODE_CHARS", 8000)
+AI_REPORT_INDEX_WAIT_SECONDS = _int("AI_REPORT_INDEX_WAIT_SECONDS", 60)

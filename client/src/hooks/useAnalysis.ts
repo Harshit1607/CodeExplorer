@@ -23,6 +23,8 @@ export interface AnalysisState {
   architecture: any;
   quickstart: any;
   aiReport: any;
+  /** Set when the server starts writing the AI report (it may first wait for the search index). */
+  aiReportPending: { waiting_for_index: boolean; max_wait_seconds: number } | null;
   keyFiles: any[];
   entryPoints: any[];
   searchIndex: SearchIndexState;
@@ -48,6 +50,7 @@ const initialState = (): AnalysisState => ({
   architecture: null,
   quickstart: null,
   aiReport: null,
+  aiReportPending: null,
   keyFiles: [],
   entryPoints: [],
   searchIndex: { status: 'idle', searchable: false, indexed: 0, total: 0 },
@@ -78,6 +81,8 @@ function describe(eventName: string, data: any): string | null {
     case 'call_graph': return 'Built call graph';
     case 'architecture_ready': return 'Generated architecture';
     case 'quickstart_ready': return 'Generated quick start guide';
+    case 'ai_report_started':
+      return data.waiting_for_index ? 'Writing AI report (waiting for the code index)' : 'Writing AI report';
     case 'ai_report_ready': return 'AI report ready';
     case 'analysis_complete': return 'Analysis complete';
     default: return null;
@@ -187,6 +192,9 @@ export function useAnalysis() {
             break;
           case 'quickstart_ready':
             next.quickstart = data;
+            break;
+          case 'ai_report_started':
+            next.aiReportPending = data;
             break;
           case 'ai_report_ready':
             next.aiReport = data;

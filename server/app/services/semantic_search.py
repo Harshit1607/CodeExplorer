@@ -305,12 +305,18 @@ def semantic_search(query: str, analysis_data: Dict, limit: int = 30) -> List[Di
 RRF_K = 60                 # standard reciprocal-rank-fusion constant
 MIN_VECTOR_SIMILARITY = 0.45
 SNIPPET_LINES = 14
-TYPE_ORDER = ["function", "class", "file", "import"]
+TYPE_ORDER = ["function", "class", "file", "docs", "config", "import"]
+DOCS_PENALTY = 0.75        # docs/config rank below code unless the query is about setup/config/deploy
 
 
 def _chunk_to_item(chunk) -> Dict[str, Any]:
     """Map an embedded chunk onto the same identity scheme as the keyword index."""
     file_name = chunk.file.split("/")[-1]
+    if chunk.tag != "code":
+        # Docs/config: one result per section (docs) or per file (config).
+        name = chunk.symbol or file_name
+        context = f"{chunk.tag} · {file_name}" + (f" · {chunk.symbol}" if chunk.symbol else "")
+        return {"type": chunk.tag, "name": name, "file_path": chunk.file, "context": context}
     if chunk.symbol and chunk.kind in ("function", "method", "class"):
         short = chunk.symbol.split(".")[-1]
         item_type = "class" if chunk.kind == "class" else "function"
@@ -327,6 +333,12 @@ def _key(item: Dict[str, Any]):
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][\w$.]*$")
 _SECONDARY_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|__mocks__|spec|specs|examples?|samples?|demos?|docs|fixtures?|benchmarks?)(/|$)|(^|/)test_|_test\.|\.test\.|\.spec\.")
 _SECONDARY_QUERY_RE = re.compile(r"\b(tests?|spec|specs|mock|fixtures?|examples?|samples?|demo)\b", re.I)
+# Setup / configuration / deployment questions: docs and config chunks are what answers them.
+_DOCS_QUERY_RE = re.compile(
+    r"\b(install\w*|set ?up|setup|configur\w*|config|settings|env(ironment)?( var\w*)?|deploy\w*|docker\w*|"
+    r"containers?|compose|kubernetes|k8s|helm|ci|pipelines?|workflows?|github actions|build(ing)?|"
+    r"contribut\w*|getting started|readme|docs?|documentation|makefile|prerequisites?|requirements|"
+    r"run(ning)? (the )?(tests?|app|project|server|it|locally)|run locally|release\w*|publish\w*)\b", re.I)
 
 
 def _fusion_weights(query: str):
@@ -366,6 +378,7 @@ def hybrid_search(query: str, files: Dict[str, Dict], vector_index=None,
         w_vec = 0.0
     max_fused = (w_kw + w_vec or 1.0) / (RRF_K + 1)
     penalize_secondary = not _SECONDARY_QUERY_RE.search(query)
+    penalize_docs = not _DOCS_QUERY_RE.search(query)
 
     fused: Dict[tuple, Dict[str, Any]] = {}
     for rank, item in enumerate(kw_results, start=1):
@@ -381,11 +394,14 @@ def hybrid_search(query: str, files: Dict[str, Dict], vector_index=None,
         else:
             fused[k] = {**item, "_rrf": w_vec / (RRF_K + rank), "match": "semantic"}
 
-    if penalize_secondary:
-        # Tests / examples / docs are useful, but rarely what an explorer is looking for first.
-        for entry in fused.values():
-            if _SECONDARY_PATH_RE.search(entry["file_path"].lower()):
-                entry["_rrf"] *= 0.75
+    for entry in fused.values():
+        if entry["type"] in ("docs", "config"):
+            # Docs/config answer setup questions; for code questions, code comes first.
+            if penalize_docs:
+                entry["_rrf"] *= DOCS_PENALTY
+        elif penalize_secondary and _SECONDARY_PATH_RE.search(entry["file_path"].lower()):
+            # Tests / examples are useful, but rarely what an explorer is looking for first.
+            entry["_rrf"] *= 0.75
 
     results = sorted(fused.values(), key=lambda x: (x["_rrf"], x.get("similarity") or 0), reverse=True)[:limit]
     for r in results:

@@ -4,8 +4,10 @@ Streaming analysis pipeline.
 Stages (progress is monotonic):
    0-15  Clone          clone_progress, repo_meta
   15-50  Scan           scan_started, file_complexity_batch, file_tree
-  50-95  Deep analysis  language_dist, key_files, framework_detected, file_dependencies,
-                        call_graph, architecture_ready, quickstart_ready, ai_report_ready
+  50-85  Deep analysis  language_dist, key_files, framework_detected, file_dependencies,
+                        call_graph, architecture_ready, quickstart_ready
+  86-92  AI report      ai_report_started, ai_report_ready   (waits for the search index, bounded,
+                        so the report is written from retrieved code; see report_grounding.py)
    ||    Search index   search_index_progress, search_index_ready   (runs concurrently)
   100    Done           analysis_complete
 
@@ -32,8 +34,11 @@ from app.core import config
 from app.services.ai_analyzer import AIAnalyzer
 from app.services.architecture_service import ArchitectureAnalyzer
 from app.services.code_analyzer import CodeAnalyzer
-from app.services.code_chunker import CodeChunker
+from app.services.code_chunker import CodeChunk, CodeChunker
+from app.services.doc_files import collect_doc_chunks
 from app.services.fs_utils import remove_tree
+from app.services.llm import groq_api_key
+from app.services.report_grounding import build_report_grounding
 from app.services.vector_index import VectorIndex
 
 HEARTBEAT = ": heartbeat\n\n"
@@ -150,6 +155,9 @@ class StreamingPipeline:
         self.warnings: List[str] = []
         # Deep-analysis results kept server-side for chat / search (filled as stages finish).
         self.results: Dict[str, Any] = {}
+        # Every chunk (code + docs/config), kept until the AI report has picked its excerpts.
+        self.chunks: List[CodeChunk] = []
+        self._chunks_ready = asyncio.Event()
         self.started_at = time.time()
         self.last_access = time.time()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -250,7 +258,8 @@ class StreamingPipeline:
             await self._scan_files()
 
             index_task = asyncio.create_task(self._build_search_index())
-            await self._run_deep_analysis()
+            report_input = await self._run_deep_analysis()
+            await self._generate_ai_report(report_input, index_task)
             await index_task
 
             self.emit("analysis_complete", "Complete", 100, {
@@ -278,6 +287,7 @@ class StreamingPipeline:
             if self._abandon_timer:
                 self._abandon_timer.cancel()
                 self._abandon_timer = None
+            self.chunks = []
             self.analyzer._file_contents.clear()
             self.executor.shutdown(wait=False, cancel_futures=True)
             await asyncio.to_thread(remove_tree, self.repo_path)
@@ -454,7 +464,8 @@ class StreamingPipeline:
         self.emit("file_tree", "Scanning", 50, tree)
 
     # -------------------------------------------------- stage 3: deep analysis
-    async def _run_deep_analysis(self) -> None:
+    async def _run_deep_analysis(self) -> Dict[str, Any]:
+        """Runs the static analysis stages; returns the metadata the AI report is written from."""
         a = self.analyzer
         stage = "Analyzing"
 
@@ -508,37 +519,66 @@ class StreamingPipeline:
         self.results["quickstart"] = quickstart
         self.emit("quickstart_ready", stage, 84, quickstart)
 
-        # ---- stage 4: AI report (network bound, runs while indexing continues)
+        return {
+            "repoMeta": self.repo_meta,
+            "languages": languages,
+            "frameworks": frameworks,
+            "databases": databases,
+            "entryPoints": entry_points,
+            "keyFiles": key_files,
+            "complexity": {"fileList": [
+                {"file": rel, "lines": m.get("lines", 0),
+                 "functions": m.get("functions", []), "classes": m.get("classes", [])}
+                for rel, m in a.files.items()
+            ]},
+            "quickstart": quickstart,
+            "file_dependencies": file_deps,
+        }
+
+    # ------------------------------------------------------ stage 4: AI report
+    async def _generate_ai_report(self, report_input: Dict[str, Any], index_task: asyncio.Task) -> None:
+        """
+        Write the report from retrieved code. The index finishes long after the static analysis
+        (seconds vs minutes on big repos), so wait for it, but at most AI_REPORT_INDEX_WAIT_SECONDS;
+        then use the part that is already searchable (product code is embedded first).
+        """
+        stage = "AI Report"
         try:
-            report = await AIAnalyzer({
-                "repoMeta": self.repo_meta,
-                "languages": languages,
-                "frameworks": frameworks,
-                "databases": databases,
-                "entryPoints": entry_points,
-                "keyFiles": key_files,
-                "complexity": {"fileList": [
-                    {"file": rel, "lines": m.get("lines", 0),
-                     "functions": m.get("functions", []), "classes": m.get("classes", [])}
-                    for rel, m in a.files.items()
-                ]},
-                "quickstart": quickstart,
-                "file_dependencies": file_deps,
-            }).generate_report()
-            self.emit("ai_report_ready", "AI Report", 92, report)
+            grounding = None
+            if groq_api_key():  # without a key the report is an error message; don't wait for it
+                await self._chunks_ready.wait()  # chunking is quick; embedding is what takes time
+                waiting = not index_task.done()
+                self.emit("ai_report_started", stage, 86, {
+                    "waiting_for_index": waiting,
+                    "max_wait_seconds": config.AI_REPORT_INDEX_WAIT_SECONDS,
+                })
+                if waiting:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(index_task),
+                                               timeout=max(0, config.AI_REPORT_INDEX_WAIT_SECONDS))
+                    except asyncio.TimeoutError:
+                        pass  # use the partial index
+                    except Exception:
+                        pass  # the index task reports its own failure; ground on chunks alone
+                a = self.analyzer
+                grounding = await self._in_thread(lambda: build_report_grounding(
+                    self.chunks, self.vector_index, self.results.get("entry_points"),
+                    self.results.get("key_files"), a.found_routes, self.results.get("call_graph"),
+                    a.files, config.AI_REPORT_CODE_CHARS, self.results.get("frameworks"),
+                    self.results.get("databases")))
+            report = await AIAnalyzer(report_input, grounding).generate_report()
+            self.emit("ai_report_ready", stage, 92, report)
         except Exception as e:
             print(f"[{self.repo_id}] AI report failed: {e!r}")
-            self.warn("AI Report", "AI report failed.")
-            self.emit("ai_report_ready", "AI Report", 92, {"error": "Failed to generate AI report."})
+            self.warn(stage, "AI report failed.")
+            self.emit("ai_report_ready", stage, 92, {"error": "Failed to generate AI report."})
+        finally:
+            self.chunks = []  # the index keeps what it embedded; drop the rest
 
     # ----------------------------------------------- concurrent: vector index
     async def _build_search_index(self) -> None:
         stage = "Indexing"
         index = self.vector_index
-        if not config.VECTOR_SEARCH_ENABLED:
-            index.status = "unavailable"
-            self.emit("search_index_ready", stage, None, index.info())
-            return
 
         def _chunk():
             chunker = CodeChunker()
@@ -546,9 +586,22 @@ class StreamingPipeline:
             for rel, meta in self.analyzer.files.items():
                 content = self.analyzer._file_contents.get(rel) or meta.get("content", "")
                 chunks.extend(chunker.chunk_file(rel, content, meta.get("language", ""), meta.get("symbols")))
+            # README, docs/, Dockerfile, compose, CI, .env.example, Makefile (tagged docs/config)
+            chunks.extend(collect_doc_chunks(str(self.repo_path), self.analyzer._keep_dir))
             return chunks
 
-        chunks = await self._in_thread(_chunk)
+        try:
+            # Chunked even without vector search: the AI report quotes entry points and key files.
+            chunks = await self._in_thread(_chunk)
+            self.chunks = chunks
+        finally:
+            self._chunks_ready.set()
+
+        if not config.VECTOR_SEARCH_ENABLED:
+            index.status = "unavailable"
+            self.emit("search_index_ready", stage, None, index.info())
+            return
+
         index.total_chunks = len(chunks)
         self.emit("search_index_progress", stage, None, {"status": "building", "indexed": 0, "total": len(chunks)})
 

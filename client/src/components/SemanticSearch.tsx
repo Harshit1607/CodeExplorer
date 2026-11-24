@@ -34,6 +34,10 @@ const MODES: { id: SearchMode; label: string; hint: string }[] = [
   { id: 'keyword', label: 'Keyword', hint: 'Names and concepts only' },
 ];
 
+const TYPE_LABELS: Record<string, string> = {
+  function: 'functions', class: 'classes', file: 'files', import: 'imports', docs: 'docs', config: 'config',
+};
+
 const suggestedSearches = [
   { label: 'Authentication', query: 'where is user authentication handled' },
   { label: 'API Endpoints', query: 'http api route handlers' },
@@ -43,6 +47,7 @@ const suggestedSearches = [
   { label: 'Entry Point', query: 'application startup and initialization' },
   { label: 'UI Components', query: 'ui component rendering' },
   { label: 'Tests', query: 'test spec' },
+  { label: 'Deploy', query: 'how to deploy and configure the project' },
 ];
 
 function githubLink(repoMeta: any, r: SearchResult): string | null {
@@ -126,6 +131,8 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
       case 'function': return '⚡';
       case 'class': return '🔷';
       case 'import': return '📦';
+      case 'docs': return '📘';
+      case 'config': return '⚙️';
       default: return '📌';
     }
   };
@@ -136,6 +143,8 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
       case 'function': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300';
       case 'class': return 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300';
       case 'import': return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
+      case 'docs': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300';
+      case 'config': return 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300';
       default: return 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300';
     }
   };
@@ -170,7 +179,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
             <span>🔍</span> Semantic Code Search
           </h3>
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            Describe what the code does — results combine vector embeddings of the source with name and concept matching
+            Describe what the code does — results combine vector embeddings of the source, docs and config files with name and concept matching
           </p>
         </div>
 
@@ -321,7 +330,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
                     }`}
                   >
                     <span>{getTypeIcon(type)}</span>
-                    {type}s ({items.length})
+                    {TYPE_LABELS[type] || type} ({items.length})
                   </button>
                 ))}
               </div>
