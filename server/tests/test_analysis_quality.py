@@ -153,17 +153,49 @@ def test_flask_session_dict_is_not_a_database_session(tmp_path):
 
             def cached(conn, pool, key):
                 return conn.get(key) or pool.get("default")
+
+            def flashed():
+                return session.get(SESSION_KEY)
         """,
         "site/users.py": """
+            from site.ext import db
+
             def load_user(session, user_id):
                 return session.get(User, user_id)
+
+            def find_user(user_id):
+                return db.session.get(User, user_id)
+
+            def save_user(user):
+                db.session.add(user)
+                db.session.commit()
         """,
     }))
     db = db_nodes(r)
-    assert list(db) == ["db-query::SELECT"]
-    assert db["db-query::SELECT"]["called_by"] == ["site/users.py::load_user"]
+    assert sorted(db) == ["db-query::INSERT", "db-query::SELECT"]
+    assert sorted(db["db-query::SELECT"]["called_by"]) == ["site/users.py::find_user", "site/users.py::load_user"]
+    assert db["db-query::INSERT"]["called_by"] == ["site/users.py::save_user"]
     assert all(r["call_graph"][f"site/auth.py::{f}"]["type"] != "service"
-               for f in ("current_user_id", "remember", "cached"))
+               for f in ("current_user_id", "remember", "cached", "flashed"))
+
+
+def test_drizzle_db_update_is_a_database_query(tmp_path):
+    r = analyze(make_project(tmp_path, {
+        "package.json": json.dumps({"name": "api", "dependencies": {"drizzle-orm": "0.30"}}),
+        "src/users.ts": """
+            export async function rename(db, id, name) {
+              return db.update(users).set({ name }).where(eq(users.id, id));
+            }
+
+            export function merge(settings, extra) {
+              settings.update(extra);
+              return settings;
+            }
+        """,
+    }))
+    db = db_nodes(r)
+    assert list(db) == ["db-query::UPDATE"]
+    assert db["db-query::UPDATE"]["called_by"] == ["src/users.ts::rename"]
 
 
 def test_django_orm_and_prisma_are_database_queries(tmp_path):

@@ -1407,10 +1407,11 @@ class CodeAnalyzer:
     }
     # session.exec(...), cursor.execute(...), db.query(...), self.session.add(...), knex.select(...)
     _DB_RECEIVER_RE = re.compile(
-        r"(?:(?<![\w.])|(?<=self\.)|(?<=this\.)|(?<=cls\.))"
+        r"(?:(?<![\w.])|(?<=self\.)|(?<=this\.)|(?<=cls\.)|(?<=\bdb\.))"
         r"(?:session|db_session|dbsession|db|database|cursor|cur|conn|connection|engine|tx|trx|pool|em|"
         r"entityManager|knex)\.(execute|executemany|exec|query|scalars|scalar|add|add_all|bulk_save_objects|"
-        r"delete|merge|get(?=\s*\(\s*[A-Z])|find|findOne|insert|upsert|select|save|remove|fetch|fetchone|fetchall|"
+        r"delete|merge|get(?=\s*\(\s*[A-Z][a-z])|update(?<=\bdb\.update)|find|findOne|insert|upsert|select|save|"
+        r"remove|fetch|fetchone|fetchall|"
         r"fetchmany|fetchrow|fetchval|raw)\s*\(")
     # Driver / ODM methods whose names only exist on database clients (pymongo, mongoose, sequelize)
     _DB_METHOD_RE = re.compile(
