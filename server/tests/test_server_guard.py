@@ -333,6 +333,23 @@ def test_foreign_origin_cannot_start_an_analysis(fake_pipelines, monkeypatch):
     assert len(fake_pipelines) == 2
 
 
+@pytest.mark.parametrize("site", ["cross-site", "same-site"])
+def test_foreign_no_cors_load_cannot_start_an_analysis(fake_pipelines, site):
+    # <img src=".../analyze/stream?..."> on another site sends no Origin, only Sec-Fetch-Site.
+    resp = TestClient(app).get("/api/analyze/stream", headers={"Sec-Fetch-Site": site},
+                               params={"repo": REPO, "session_id": str(uuid.uuid4())})
+    assert resp.status_code == 403
+    assert fake_pipelines == []
+
+
+@pytest.mark.parametrize("site", ["same-origin", "none"])
+def test_same_origin_or_typed_url_can_start_an_analysis(fake_pipelines, site):
+    resp = TestClient(app).get("/api/analyze/stream", headers={"Sec-Fetch-Site": site},
+                               params={"repo": REPO, "session_id": str(uuid.uuid4())})
+    assert resp.status_code == 200
+    assert len(fake_pipelines) == 1
+
+
 def test_configured_origins_decide_who_may_start_an_analysis(fake_pipelines, monkeypatch):
     monkeypatch.setattr(config, "CORS_ALLOWED_ORIGINS", ["https://app.example"])
     client = TestClient(app)

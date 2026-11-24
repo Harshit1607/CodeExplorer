@@ -75,9 +75,14 @@ def _is_session_id(value: str) -> bool:
 @router.get("/analyze/stream")
 async def analyze_stream(request: Request, repo: str = "", session_id: str = None):
     # EventSource requests skip the CORS preflight, so a foreign page could start
-    # analyses it can't even read; refuse them before any work is done.
+    # analyses it can't even read; refuse them before any work is done. No-cors loads
+    # (<img>, <script>, iframes) carry no Origin, so fall back to Sec-Fetch-Site.
     origin = request.headers.get("origin")
-    if origin and not origin_allowed(origin):
+    if origin:
+        foreign = not origin_allowed(origin)
+    else:
+        foreign = request.headers.get("sec-fetch-site") in ("cross-site", "same-site")
+    if foreign:
         return JSONResponse({"detail": "Origin not allowed."}, status_code=403)
     try:
         repo = normalize_github_url(repo)
