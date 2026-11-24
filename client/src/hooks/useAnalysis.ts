@@ -83,6 +83,14 @@ function describe(eventName: string, data: any): string | null {
   }
 }
 
+/** Forget the remembered repo so a reload after a fatal error doesn't retry it forever. */
+function forgetRepo(repoUrl: string) {
+  sessionStorage.removeItem(`codeexplorer_session_${repoUrl}`);
+  if (sessionStorage.getItem('codeexplorer_last_repo') === repoUrl) {
+    sessionStorage.removeItem('codeexplorer_last_repo');
+  }
+}
+
 export function useAnalysis() {
   const [state, setState] = useState<AnalysisState>(initialState);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -98,7 +106,10 @@ export function useAnalysis() {
 
     let sessionId = sessionStorage.getItem(`codeexplorer_session_${repoUrl}`);
     if (!sessionId) {
-      sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+      sessionId = crypto.randomUUID
+        ? crypto.randomUUID()
+        : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c =>
+            (Number(c) ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))).toString(16));
       sessionStorage.setItem(`codeexplorer_session_${repoUrl}`, sessionId);
     }
     sessionStorage.setItem('codeexplorer_last_repo', repoUrl);
@@ -208,6 +219,7 @@ export function useAnalysis() {
               next.error = data.message;
               next.status = 'error';
               es.close();
+              forgetRepo(repoUrl);
             }
             break;
         }
@@ -220,6 +232,7 @@ export function useAnalysis() {
         console.error('SSE Connection Closed:', err);
         setState(s => {
           if (s.status === 'complete' || s.status === 'error') return s;
+          forgetRepo(repoUrl);
           return { ...s, status: 'error', error: 'Connection to server lost. Please try again.' };
         });
       } else if (es.readyState === EventSource.CONNECTING) {

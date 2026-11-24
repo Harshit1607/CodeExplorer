@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from app.services.fs_utils import inside_repo, read_repo_text
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover
@@ -43,19 +45,16 @@ MANIFEST_NAMES = {
 _REQUIREMENTS_RE = re.compile(r"^requirements([-_.][\w.-]+)?\.(txt|in)$", re.I)
 
 
-def _read(path: str) -> str:
-    try:
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    except OSError:
-        return ""
+def _read(repo_path: str, *parts: str) -> str:
+    """Text of a repository file; "" when missing or a symlink leading outside the repo."""
+    return read_repo_text(repo_path, *parts) or ""
 
 
-def _toml(path: str) -> dict:
+def _toml(repo_path: str, *parts: str) -> dict:
     if tomllib is None:
         return {}
     try:
-        return tomllib.loads(_read(path))
+        return tomllib.loads(_read(repo_path, *parts))
     except Exception:
         return {}
 
@@ -83,7 +82,8 @@ def find_manifests(repo_path: str, skip_dirs: Set[str]) -> Dict[str, List[str]]:
             kind = MANIFEST_NAMES.get(name)
             if kind is None and _REQUIREMENTS_RE.match(name):
                 kind = "requirements"
-            if kind and len(found[kind]) < MAX_MANIFESTS_PER_TYPE:
+            if kind and len(found[kind]) < MAX_MANIFESTS_PER_TYPE \
+                    and inside_repo(repo_path, os.path.join(root, name)):
                 found[kind].append(f"{rel}/{name}" if rel else name)
     return found
 
@@ -99,7 +99,6 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
     deps: Dict[str, Dict[str, List[str]]] = {
         "python": {}, "javascript": {}, "java": {}, "rust": {}, "cpp": {}, "other": {},
     }
-    full = lambda rel: os.path.join(repo_path, rel)
 
     def put(eco: str, key: str, names: Iterable[str]):
         names = list(dict.fromkeys(n for n in names if n))
@@ -109,7 +108,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
     # ---- JavaScript
     for rel in manifests.get("npm", []):
         try:
-            pkg = json.loads(_read(full(rel)))
+            pkg = json.loads(_read(repo_path, rel))
         except Exception:
             continue
         prefix = posixpath.dirname(rel)
@@ -121,7 +120,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
     # ---- Python
     for rel in manifests.get("requirements", []):
         names = []
-        for line in _read(full(rel)).splitlines():
+        for line in _read(repo_path, rel).splitlines():
             line = line.split("#", 1)[0].strip()
             if not line or line.startswith(("-r", "-c", "--")):
                 continue
@@ -133,7 +132,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
         put("python", rel, names)
 
     for rel in manifests.get("pyproject", []):
-        data = _toml(full(rel))
+        data = _toml(repo_path, rel)
         project = data.get("project") or {}
         put("python", rel, (_pep508_name(r) for r in project.get("dependencies") or []))
         extra = [_pep508_name(r) for group in (project.get("optional-dependencies") or {}).values() for r in group]
@@ -151,29 +150,29 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
         put("python", _key(rel, "dev/optional"), extra)
 
     for rel in manifests.get("pipfile", []):
-        data = _toml(full(rel))
+        data = _toml(repo_path, rel)
         put("python", rel, (data.get("packages") or {}).keys())
         put("python", _key(rel, "dev"), (data.get("dev-packages") or {}).keys())
 
     for rel in manifests.get("setupcfg", []):
         cfg = configparser.ConfigParser()
         try:
-            cfg.read_string(_read(full(rel)))
+            cfg.read_string(_read(repo_path, rel))
             raw = cfg.get("options", "install_requires", fallback="")
             put("python", rel, (_pep508_name(l) for l in raw.splitlines() if l.strip()))
         except Exception:
             pass
 
     for rel in manifests.get("setuppy", []):
-        m = re.search(r"install_requires\s*=\s*\[(.*?)\]", _read(full(rel)), re.S)
+        m = re.search(r"install_requires\s*=\s*\[(.*?)\]", _read(repo_path, rel), re.S)
         if m:
             put("python", rel, (_pep508_name(s) for s in re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))))
 
     # ---- Java
     for rel in manifests.get("maven", []):
-        put("java", rel, _maven_deps(_read(full(rel))))
+        put("java", rel, _maven_deps(_read(repo_path, rel)))
     for rel in manifests.get("gradle", []):
-        text = _read(full(rel))
+        text = _read(repo_path, rel)
         coords = re.findall(
             r"\b(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|"
             r"annotationProcessor|kapt|ksp|developmentOnly|classpath|compile|testCompile)\s*\(?\s*"
@@ -184,7 +183,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
         plugins += [p for p in re.findall(r"^\s*(application|java-library|java)\s*$", text, re.M)]
         put("java", _key(rel, "plugins"), plugins)
     for rel in manifests.get("gradle-catalog", []):
-        data = _toml(full(rel))
+        data = _toml(repo_path, rel)
         libs = []
         for v in (data.get("libraries") or {}).values():
             if isinstance(v, str):
@@ -197,7 +196,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
 
     # ---- Rust
     for rel in manifests.get("cargo", []):
-        data = _toml(full(rel))
+        data = _toml(repo_path, rel)
         tables = {"": [data.get("dependencies")], "dev": [data.get("dev-dependencies")],
                   "build": [data.get("build-dependencies")]}
         tables[""].append((data.get("workspace") or {}).get("dependencies"))
@@ -213,7 +212,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
 
     # ---- C / C++
     for rel in manifests.get("cmake", []):
-        text = _read(full(rel))
+        text = _read(repo_path, rel)
         names = re.findall(r"find_package\s*\(\s*([A-Za-z0-9_]+)", text, re.I)
         names += re.findall(r"FetchContent_Declare\s*\(\s*([A-Za-z0-9_\-]+)", text, re.I)
         names += re.findall(r"CPMAddPackage\s*\(\s*NAME\s+([A-Za-z0-9_\-]+)", text, re.I)
@@ -221,7 +220,7 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
         names += re.findall(r"pkg_check_modules\s*\(\s*\w+\s+(?:(?:REQUIRED|QUIET|IMPORTED_TARGET|GLOBAL)\s+)*([\w\-+.]+)", text, re.I)
         put("cpp", rel, names)
     for rel in manifests.get("conan", []):
-        text = _read(full(rel))
+        text = _read(repo_path, rel)
         if rel.endswith(".txt"):
             section, names = None, []
             for line in text.splitlines():
@@ -235,16 +234,16 @@ def extract_dependencies(repo_path: str, manifests: Dict[str, List[str]]) -> Dic
             put("cpp", rel, re.findall(r"[\"']([\w.\-+]+)/[\w.\-+@\[\]~, ]+[\"']", text))
     for rel in manifests.get("vcpkg", []):
         try:
-            data = json.loads(_read(full(rel)))
+            data = json.loads(_read(repo_path, rel))
             put("cpp", rel, ((d if isinstance(d, str) else d.get("name")) for d in data.get("dependencies", [])))
         except Exception:
             pass
     for rel in manifests.get("meson", []):
-        put("cpp", rel, re.findall(r"dependency\s*\(\s*'([^']+)'", _read(full(rel))))
+        put("cpp", rel, re.findall(r"dependency\s*\(\s*'([^']+)'", _read(repo_path, rel)))
 
     # ---- Go
     for rel in manifests.get("gomod", []):
-        put("other", rel, re.findall(r"^\s*([\w./-]+)\s+v\d", _read(full(rel)), re.M))
+        put("other", rel, re.findall(r"^\s*([\w./-]+)\s+v\d", _read(repo_path, rel), re.M))
 
     return deps
 
@@ -306,7 +305,7 @@ def _js_package_manager(repo_path: str, root: str) -> str:
             if os.path.exists(os.path.join(base, lock)):
                 return pm
     try:
-        pm = json.loads(_read(os.path.join(repo_path, root, "package.json"))).get("packageManager", "")
+        pm = json.loads(_read(repo_path, root, "package.json")).get("packageManager", "")
         for name in ("pnpm", "yarn", "bun"):
             if pm.startswith(name):
                 return name
@@ -343,7 +342,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
     # ---- JavaScript / TypeScript
     for root in _roots(manifests.get("npm", [])):
         try:
-            pkg = json.loads(_read(os.path.join(repo_path, root, "package.json")))
+            pkg = json.loads(_read(repo_path, root, "package.json"))
         except Exception:
             continue
         scripts = pkg.get("scripts") or {}
@@ -363,7 +362,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
     py_manifests = (manifests.get("pyproject", []) + manifests.get("setuppy", []) + manifests.get("pipfile", [])
                     + manifests.get("requirements", []) + manifests.get("django", []) + manifests.get("setupcfg", []))
     for root in _roots(py_manifests):
-        pyproject = _toml(os.path.join(repo_path, root, "pyproject.toml")) if has(root, "pyproject.toml") else {}
+        pyproject = _toml(repo_path, root, "pyproject.toml") if has(root, "pyproject.toml") else {}
         tool_cfg = pyproject.get("tool") or {}
         if has(root, "uv.lock") or "uv" in tool_cfg:
             tool = "uv"
@@ -422,7 +421,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
     # ---- Rust
     rs_files = [p for p in files if p.endswith(".rs")]
     for root in _roots(manifests.get("cargo", [])):
-        data = _toml(os.path.join(repo_path, root, "Cargo.toml"))
+        data = _toml(repo_path, root, "Cargo.toml")
         is_workspace = "workspace" in data
         flag = " --workspace" if is_workspace else ""
         prefix = f"{root}/" if root else ""
@@ -432,7 +431,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
         elif is_workspace:
             bins = sorted(p for p in rs_files if p.startswith(prefix) and p.endswith("/src/main.rs"))
             for b in bins[:1]:
-                member = _toml(os.path.join(repo_path, posixpath.dirname(posixpath.dirname(b)), "Cargo.toml"))
+                member = _toml(repo_path, posixpath.dirname(posixpath.dirname(b)), "Cargo.toml")
                 name = (member.get("package") or {}).get("name")
                 if name:
                     run = f"cargo run -p {name}"
@@ -477,7 +476,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
         cmakelists = [m for m in manifests.get("cmake", []) if not root or m.startswith(root + "/")]
         executables, testing = [], False
         for m in cmakelists:
-            text = _read(os.path.join(repo_path, m))
+            text = _read(repo_path, m)
             testing = testing or bool(re.search(r"enable_testing|add_test\s*\(|gtest_discover_tests|catch_discover_tests", text, re.I))
             sub = posixpath.dirname(m)[len(root):].strip("/") if root else posixpath.dirname(m)
             if _SECONDARY_DIR_RE.search(sub):
@@ -501,7 +500,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
     for root in _roots(manifests.get("make", [])):
         if not has_c or root in cmake_roots or has(root, "meson.build"):
             continue
-        text = _read(os.path.join(repo_path, root, "Makefile")) or _read(os.path.join(repo_path, root, "makefile"))
+        text = _read(repo_path, root, "Makefile") or _read(repo_path, root, "makefile")
         systems.append(_entry("C/C++", "make", root, build="make",
                               test="make test" if re.search(r"^test\s*:", text, re.M) else None))
 

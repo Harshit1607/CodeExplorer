@@ -157,6 +157,8 @@ export default function GlobalSearch({ files, onNavigate }: GlobalSearchProps) {
         setQuery('');
         break;
     }
+    // handleSelect is declared below (it can't be listed here) and only reads state setters and props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, results, selectedIndex]);
 
   // Handle selection

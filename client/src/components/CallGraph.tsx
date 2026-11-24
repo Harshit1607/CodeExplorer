@@ -615,6 +615,8 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     return () => {
       if (simulation) simulation.stop();
     };
+    // handleRemoveFunction is recreated every render; listing it would rebuild the graph each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callGraph, displayMode, graphMode, selectedFunction, expandedFunctions, graphDepth, getNodeColor, handleNodeClick, fullStackMode]);
 
   // Empty state

@@ -249,7 +249,6 @@ Keep your workspace organized:
 CodeExplorer/
 ├── server/
 │   ├── venv/           # Virtual environment (git ignored)
-│   ├── workspace/      # Cloned repos (git ignored)
 │   ├── app/            # Application code
 │   └── tests/          # pytest suite
 └── client/

@@ -3,6 +3,7 @@
 ####################################
 .env
 .env.*
+!.env.example
 *.log
 *.tmp
 *.swp
@@ -14,7 +15,7 @@
 Thumbs.db
 
 ####################################
-# Python / serevr
+# Python / server
 ####################################
 __pycache__/
 *.py[cod]
@@ -43,9 +44,6 @@ htmlcov/
 server/workspace/
 server/.cache/
 server/tmp/
-serevr/workspace/
-serevr/.cache/
-serevr/tmp/
 
 ####################################
 # Node / client

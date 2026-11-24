@@ -3,6 +3,7 @@ import RepositoryInput from './components/RepositoryInput';
 import AnalysisResults from './components/AnalysisResults';
 import { useTheme } from './context/ThemeContext';
 import { useAnalysis } from './hooks/useAnalysis';
+import { normalizeGithubUrl } from './lib/githubUrl';
 
 function App() {
   const { theme, toggleTheme } = useTheme();
@@ -13,8 +14,11 @@ function App() {
   };
 
   useEffect(() => {
-    const lastRepo = sessionStorage.getItem('codeexplorer_last_repo');
-    if (lastRepo && analysisState.status === 'idle') {
+    const stored = sessionStorage.getItem('codeexplorer_last_repo');
+    const lastRepo = stored && normalizeGithubUrl(stored);
+    if (stored && !lastRepo) sessionStorage.removeItem('codeexplorer_last_repo');
+    // Runs once on mount (startAnalysis is stable), while the analysis is still idle.
+    if (lastRepo) {
       startAnalysis(lastRepo, false);
     }
   }, [startAnalysis]);
@@ -62,7 +66,7 @@ function App() {
               </div>
 
               <div className="flex items-center gap-4">
-                {(showResults || showLoading) && (
+                {(showResults || showLoading || analysisState.status === 'error') && (
                   <button
                     onClick={resetAnalysis}
                     className="px-4 py-2 text-sm font-medium text-[var(--text-primary)] bg-[var(--bg-tertiary)] border border-[var(--border-color)] hover:border-primary-400 hover:text-primary-500 rounded-lg transition-colors flex items-center gap-2"

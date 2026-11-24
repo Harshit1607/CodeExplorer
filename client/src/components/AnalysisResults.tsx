@@ -14,12 +14,23 @@ import CallGraph from './CallGraph';
 import ArchitectureDiagram from './ArchitectureDiagram';
 import AIReportSection from './AIReportSection';
 
+const KEEP_MOUNTED_TABS = new Set(['chat', 'search']);
+
 interface AnalysisResultsProps {
   state: any;
 }
 
 export default function AnalysisResults({ state }: AnalysisResultsProps) {
   const [activeTab, setActiveTab] = useState('quickstart');
+  // Chat and Search hold a conversation / results in their own state. Once opened they stay
+  // mounted (just hidden), so switching tabs doesn't wipe them or drop an in-flight answer.
+  const [openedPanels, setOpenedPanels] = useState<Set<string>>(() => new Set());
+  const selectTab = useCallback((id: string) => {
+    setActiveTab(id);
+    if (KEEP_MOUNTED_TABS.has(id)) {
+      setOpenedPanels(prev => (prev.has(id) ? prev : new Set(prev).add(id)));
+    }
+  }, []);
   const [searchNavigationTarget, setSearchNavigationTarget] = useState<{
     filePath: string;
     type: string;
@@ -101,7 +112,7 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
             {tabs.map((tab, index) => (
               <Fragment key={tab.id}>
                 <button
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => selectTab(tab.id)}
                   className={`
                     px-6 py-4 text-sm font-medium whitespace-nowrap
                     border-b-2 transition-all duration-200 flex items-center gap-2.5 relative
@@ -143,8 +154,10 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
             />
           )}
 
-          {activeTab === 'chat' && (
-            <RepoChat analysisData={state} />
+          {openedPanels.has('chat') && (
+            <div hidden={activeTab !== 'chat'}>
+              <RepoChat analysisData={state} />
+            </div>
           )}
 
           {activeTab === 'ai' && (
@@ -154,8 +167,10 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
             />
           )}
 
-          {activeTab === 'search' && (
-            <SemanticSearch analysisData={state} />
+          {openedPanels.has('search') && (
+            <div hidden={activeTab !== 'search'}>
+              <SemanticSearch analysisData={state} />
+            </div>
           )}
 
           {activeTab === 'architecture' && (
@@ -181,8 +196,7 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
           {activeTab === 'overview' && (
             <OverviewSection
               repositoryUrl={state.repoMeta?.url || "Repository"}
-              scanResults={{}}
-              structureAnalysis={state}
+              analysis={state}
             />
           )}
 
