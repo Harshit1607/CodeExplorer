@@ -104,7 +104,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - `search_index_progress` / `search_index_ready`: Vector index build status (runs concurrently)
   - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done (includes `commit` and `cached: true` when served from the analysis cache)
 - `GET /api/callgraph/{session_id}/summary` — The call-graph summary.
-- `GET /api/callgraph/{session_id}/functions?q=&file=&include_tests=&sort=&offset=&limit=` — A page (≤ 500) of functions with call counts: substring search, one file (`file=`), or top-N (`sort=called|connected`). Test files are excluded unless `include_tests=true`.
+- `GET /api/callgraph/{session_id}/functions?q=&file=&include_tests=&sort=&offset=&limit=` — A page (≤ 500) of functions with call counts: substring search, one file (`file=`), or top-N (`sort=called`). Test files are excluded unless `include_tests=true`.
 - `GET /api/callgraph/{session_id}/node?id=` — One function with its callers and callees.
 - `GET /api/callgraph/{session_id}/neighbourhood?ids=&depth=&include_tests=&max_nodes=` — The given functions plus callees' callees and callers' callers up to `depth` hops, breadth first, at most `max_nodes` (≤ 400). Used to draw the graph.
 - `GET /api/analyze/{session_id}/status` — Pipeline and search-index status for a session.

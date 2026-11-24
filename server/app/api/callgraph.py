@@ -30,7 +30,7 @@ def callgraph_functions(
     q: str = Query("", max_length=200),
     file: Optional[str] = Query(None, max_length=1000),
     include_tests: bool = False,
-    sort: Literal["file", "connected", "called"] = "file",
+    sort: Literal["file", "called"] = "file",
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
 ):

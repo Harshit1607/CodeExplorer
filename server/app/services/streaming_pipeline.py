@@ -205,12 +205,14 @@ class StreamingPipeline:
     async def run(self) -> None:
         self.loop = asyncio.get_running_loop()
         index_task: Optional[asyncio.Task] = None
+        save = None
         try:
             self.emit("clone_progress", "Cloning", 1, {"phase": "Checking for a cached analysis"})
             cached = await self._load_cached()
             if cached:
-                await self._replay_cached(cached)
+                store = await self._replay_cached(cached)
             else:
+                store = self._store_in_cache
                 meta_task = asyncio.create_task(self._fetch_repo_meta())
                 await self._clone_repo()
                 await meta_task
@@ -229,8 +231,7 @@ class StreamingPipeline:
                 "commit": self.commit_sha,
                 "cached": self.from_cache,
             }, terminal=True)
-            if not self.from_cache:
-                await self._in_thread(self._store_in_cache)
+            save = store
         except Exception as e:
             if index_task and not index_task.done():
                 index_task.cancel()
@@ -240,9 +241,14 @@ class StreamingPipeline:
             self.is_done = True
             self.touch()
             self.analyzer._file_contents.clear()
+            await self._in_thread(remove_tree, self.repo_path)
+            if save:
+                try:
+                    await self._in_thread(save)
+                except Exception as e:
+                    print(f"[{self.repo_id}] caching failed: {e!r}")
             self._replayable = []  # only needed to fill the cache
             self._chunks = []
-            await self._in_thread(remove_tree, self.repo_path)
             self.executor.shutdown(wait=False)
 
     # ---------------------------------------------------------- stage 1: clone
@@ -533,8 +539,9 @@ class StreamingPipeline:
         self.commit_sha = sha
         return payload
 
-    async def _replay_cached(self, payload: Dict[str, Any]) -> None:
-        """Serve a cached analysis of the same commit: replay events, rebuild the index."""
+    async def _replay_cached(self, payload: Dict[str, Any]):
+        """Serve a cached analysis of the same commit: replay events, rebuild the index.
+        Returns the cache write to run once the session is done, if any."""
         self.from_cache = True
         self.repo_meta.update(payload.get("repo_meta") or {})
         self.analyzer.files = payload.get("files") or {}
@@ -543,16 +550,22 @@ class StreamingPipeline:
             if event == "warning":
                 self.warnings.append(data.get("message", ""))
             self.emit(event, stage, progress, data)
-        if "ai_report" not in self.results:
+        store = None
+        if "ai_report" in self.results:
+            self.emit("ai_report_ready", "AI Report", 92, self.results["ai_report"])
+        else:
             await self._ai_report()
+            if "ai_report" in self.results:
+                store = self._store_ai_report
         if self._live is not None and self._live.index.status == "ready":
             self.vector_index = self._live.index
             self.emit("search_index_ready", "Indexing", None, self.vector_index.info())
-            return
+            return store
         chunks = [CodeChunk(**c) for c in payload.get("chunks") or []]
         self.vector_index.skipped_files = payload.get("index_skipped_files", 0)
         await self._build_search_index(chunks)
         self._share(payload)
+        return store
 
     def _share(self, payload: Dict[str, Any]) -> None:
         """Offer this session's finished data to later sessions of the same commit."""
@@ -573,10 +586,9 @@ class StreamingPipeline:
             "repo_url": self.repo_url,
             "commit": self.commit_sha,
             "repo_meta": self.repo_meta,
+            # The report is replayed from results["ai_report"], or regenerated when missing.
             "events": [e for e in self._replayable
-                       # a failed AI report is regenerated on replay instead
-                       if not (e[0] == "ai_report_ready" and "ai_report" not in self.results)
-                       and not (e[0] == "warning" and e[1] == "AI Report")],
+                       if e[0] != "ai_report_ready" and not (e[0] == "warning" and e[1] == "AI Report")],
             "results": self.results,
             "files": self.analyzer.files,
             "chunks": [c.to_dict() for c in self._chunks],
@@ -585,3 +597,12 @@ class StreamingPipeline:
         cache.put_analysis(analysis_key(self.repo_url, self.commit_sha), self.repo_url, self.commit_sha, payload)
         self._share(payload)
         print(f"[{self.repo_id}] cached {self.repo_url}@{self.commit_sha[:12]} in {time.time() - t:.1f}s", flush=True)
+
+    def _store_ai_report(self) -> None:
+        """Add an AI report regenerated on replay to the stored analysis (blocking)."""
+        cache = get_cache()
+        key = analysis_key(self.repo_url, self.commit_sha)
+        stored = cache.get_analysis(key) if cache else None
+        if stored:
+            stored["results"]["ai_report"] = self.results["ai_report"]
+            cache.put_analysis(key, self.repo_url, self.commit_sha, stored)

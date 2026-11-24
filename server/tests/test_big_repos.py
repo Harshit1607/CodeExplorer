@@ -287,3 +287,52 @@ def test_sessions_of_the_same_commit_share_one_copy(local_repo, tmp_path, monkey
     third = streaming_pipeline.StreamingPipeline(str(local_repo))
     asyncio.run(third.run())
     assert third.from_cache and third.vector_index.reused_chunks == third.vector_index.indexed_chunks > 0
+
+
+def test_ai_report_regenerated_on_replay_reaches_later_sessions(local_repo, tmp_path, monkeypatch, fake_embedder):
+    monkeypatch.setattr(config, "ANALYSIS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(config, "VECTOR_SEARCH_ENABLED", True)
+    monkeypatch.setattr(analysis_cache, "_cache", None)
+
+    async def no_meta(self):
+        return None
+    monkeypatch.setattr(streaming_pipeline.StreamingPipeline, "_fetch_repo_meta", no_meta)
+
+    llm_calls = []
+
+    class FakeAI:
+        def __init__(self, context):
+            pass
+
+        async def generate_report(self):
+            llm_calls.append(1)
+            if len(llm_calls) == 1:
+                raise RuntimeError("rate limited")
+            return {"summary": "generated"}
+    monkeypatch.setattr(streaming_pipeline, "AIAnalyzer", FakeAI)
+
+    def reports(pipeline):
+        return [e["data"] for e in _events(pipeline) if e["event"] == "ai_report_ready"]
+
+    first = streaming_pipeline.StreamingPipeline(str(local_repo))
+    asyncio.run(first.run())
+    assert reports(first) == [{"error": "rate limited"}]
+
+    second = streaming_pipeline.StreamingPipeline(str(local_repo))  # replays and regenerates
+    asyncio.run(second.run())
+    assert reports(second) == [{"summary": "generated"}]
+
+    third = streaming_pipeline.StreamingPipeline(str(local_repo))  # shares the live analysis
+    asyncio.run(third.run())
+    assert third.analyzer.files is first.analyzer.files
+    assert reports(third) == [{"summary": "generated"}]
+
+    del first, second, third
+    import gc
+    gc.collect()
+    assert not streaming_pipeline._live_analyses
+    fourth = streaming_pipeline.StreamingPipeline(str(local_repo))  # from disk only
+    asyncio.run(fourth.run())
+    assert fourth.from_cache
+    assert reports(fourth) == [{"summary": "generated"}]
+    assert len(llm_calls) == 2

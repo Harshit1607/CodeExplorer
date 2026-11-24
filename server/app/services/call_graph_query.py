@@ -13,7 +13,7 @@ MAX_PAGE = 500
 MAX_NEIGHBOURHOOD = 400
 MAX_NODE_EDGES = 2000
 
-_SORTS = ("file", "connected", "called")
+_SORTS = ("file", "called")
 
 
 class CallGraphQuery:
@@ -37,9 +37,6 @@ class CallGraphQuery:
             g = self.graph
             if sort == "called":
                 key = lambda f: (-len(g[f].get("called_by") or ()), g[f].get("file") or "", f)
-            elif sort == "connected":
-                key = lambda f: (-(len(g[f].get("called_by") or ()) + len(g[f].get("calls") or ())),
-                                 g[f].get("file") or "", f)
             else:
                 key = lambda f: (g[f].get("file") or "", f)
             self._orders[sort] = sorted(g, key=key)
