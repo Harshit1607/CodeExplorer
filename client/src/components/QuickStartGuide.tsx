@@ -8,6 +8,8 @@ export interface BuildSystem {
   run: string[] | null;
   test: string[] | null;
   notes: string[];
+  // Workspace root ('.' for the repository root) when this is a workspace member
+  workspace?: string | null;
 }
 
 const ECOSYSTEM_ICONS: { [key: string]: string } = {
@@ -38,6 +40,9 @@ function BuildSystemCard({ system, hasEnvExample }: { system: BuildSystem; hasEn
         <span className="text-xs px-2 py-0.5 rounded bg-primary-100 dark:bg-primary-900/40 text-primary-700 dark:text-primary-300 font-mono">{system.tool}</span>
         {system.root !== '.' && (
           <span className="text-xs px-2 py-0.5 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] font-mono">{system.root}/</span>
+        )}
+        {system.workspace && (
+          <span className="text-xs px-2 py-0.5 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)]">workspace member</span>
         )}
       </div>
       <ol className="space-y-2">
@@ -110,7 +115,11 @@ export default function QuickStartGuide({
   const frontendFrameworks = frameworks?.frontend || [];
   const backendFrameworks = frameworks?.backend || [];
   const allFrameworks = [...frontendFrameworks, ...backendFrameworks];
-  const primaryFramework = frontendFrameworks[0] || backendFrameworks[0] || null;
+  // Build tools and CSS frameworks do not say what kind of app this is
+  const SUPPORTING_FRAMEWORKS = new Set(['Vite', 'Tailwind CSS']);
+  const mainFrontend = frontendFrameworks.find(fw => !SUPPORTING_FRAMEWORKS.has(fw)) || frontendFrameworks[0];
+  const mainBackend = backendFrameworks[0];
+  const primaryFramework = mainFrontend || mainBackend || null;
 
   // Detect project characteristics
   const hasPkgJson = dependencies?.javascript && Object.keys(dependencies.javascript).length > 0;
@@ -144,10 +153,17 @@ export default function QuickStartGuide({
     .map(k => k.replace(/\/(dev)?[dD]ependencies$/, ''))
     .filter((v, i, a) => a.indexOf(v) === i);
   const hasMultiplePackages = packageLocations.length > 2;
-  const isMonorepo = hasWorkspaces || hasMultiplePackages;
+  const hasWorkspaceMembers = systems.some(s => !!s.workspace);
+  const isMonorepo = hasWorkspaces || hasMultiplePackages || hasWorkspaceMembers;
 
   // Determine project type
   const isFullStack = isFullStackStructure || (frontendFrameworks.length > 0 && backendFrameworks.length > 0);
+
+  // "this full-stack React + FastAPI monorepo", "this Flask project", "this Python library"
+  const stackName = isFullStack && mainFrontend && mainBackend
+    ? `${mainFrontend} + ${mainBackend}`
+    : (primaryFramework || displayLanguage.replace(' (React)', ''));
+  const projectDescription = `${isFullStack ? 'full-stack ' : ''}${stackName} ${isMonorepo ? 'monorepo' : 'project'}`;
 
   // Detect documentation
   const hasReadme = keyFiles.some(f => f.toLowerCase().startsWith('readme'));
@@ -203,7 +219,7 @@ export default function QuickStartGuide({
           🚀 Quick Start Guide
         </h3>
         <p className="text-sm text-[var(--text-secondary)]">
-          Overview and suggested setup for this {primaryFramework || primaryLanguage} project
+          Overview and suggested setup for this {projectDescription}
         </p>
       </div>
 
@@ -418,7 +434,9 @@ export default function QuickStartGuide({
                 <div>
                   <span className="font-medium text-amber-900 dark:text-amber-200">Monorepo detected</span>
                   <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-                    This project uses a monorepo structure with multiple packages. Each package may have its own dependencies and scripts. Check the README or root package.json for workspace setup instructions.
+                    {hasWorkspaceMembers
+                      ? 'This repository is a workspace: install dependencies once from the workspace root, then run each member\'s commands from its own directory (shown on each card above).'
+                      : 'This project uses a monorepo structure with multiple packages. Each package may have its own dependencies and scripts. Check the README or root package.json for workspace setup instructions.'}
                   </p>
                 </div>
               </div>

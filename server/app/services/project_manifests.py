@@ -15,6 +15,7 @@ Project manifests: dependencies and build/run commands for every supported ecosy
 (./mvnw, ./gradlew, uv.lock, poetry.lock, pnpm-lock.yaml, ...).
 """
 import configparser
+import fnmatch
 import json
 import os
 import posixpath
@@ -24,6 +25,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from app.services.fs_utils import inside_repo, read_repo_text
+from app.services.path_classifier import is_secondary, is_secondary_dir
 
 try:
     import tomllib
@@ -32,7 +34,6 @@ except ImportError:  # pragma: no cover
 
 MAX_MANIFESTS_PER_TYPE = 60
 MAX_ROOTS_PER_ECOSYSTEM = 4
-_SECONDARY_DIR_RE = re.compile(r"(^|/)(tests?|examples?|samples?|demos?|docs?|fixtures?|benchmarks?|benches|testdata|e2e)(/|$)", re.I)
 
 MANIFEST_NAMES = {
     "package.json": "npm", "pyproject.toml": "pyproject", "Pipfile": "pipfile", "setup.cfg": "setupcfg",
@@ -291,7 +292,7 @@ def _roots(paths: Iterable[str]) -> List[str]:
     for d in dirs:
         if any(c == "" or d == c or d.startswith(c + "/") for c in chosen):
             continue
-        if d and _SECONDARY_DIR_RE.search(d):
+        if d and is_secondary_dir(d):
             continue
         chosen.append(d)
     return chosen[:MAX_ROOTS_PER_ECOSYSTEM]
@@ -320,6 +321,7 @@ def _entry(eco: str, tool: str, root: str, **phases) -> dict:
         cmds = phases.get(phase)
         out[phase] = [c for c in ([cmds] if isinstance(cmds, str) else (cmds or [])) if c] or None
     out["notes"] = phases.get("notes") or []
+    out["workspace"] = (phases.get("workspace") or ".") if phases.get("workspace") is not None else None
     return out
 
 
@@ -333,90 +335,188 @@ def _module_under(root: str, file_path: str) -> Optional[str]:
     return ".".join(parts)
 
 
+MAX_WORKSPACE_MEMBERS = 6
+
+
+def _match_members(root: str, patterns: Iterable[str], candidate_dirs: Iterable[str]) -> List[str]:
+    """Workspace member directories (repo-relative) among `candidate_dirs` matching the
+    workspace globs of `root` (`packages/*`, `apps/**`, `frontend`, `!excluded`)."""
+    include, exclude = [], []
+    for pat in patterns:
+        if not isinstance(pat, str) or not pat.strip():
+            continue
+        pat = pat.strip()
+        target = exclude if pat.startswith("!") else include
+        pat = pat.lstrip("!").strip()
+        while pat.startswith("./"):
+            pat = pat[2:]
+        target.append(pat.rstrip("/"))
+    members = []
+    for d in sorted(set(candidate_dirs)):
+        if d == root or (root and not d.startswith(root + "/")):
+            continue
+        rel = d[len(root) + 1:] if root else d
+        if any(fnmatch.fnmatchcase(rel, p) for p in include) \
+                and not any(fnmatch.fnmatchcase(rel, p) for p in exclude) and not is_secondary_dir(rel):
+            members.append(d)
+    return members[:MAX_WORKSPACE_MEMBERS]
+
+
+def _js_workspace_members(repo_path: str, root: str, pkg: dict, npm_dirs: List[str]) -> List[str]:
+    """Members declared by package.json `workspaces` (npm / yarn / bun) or pnpm-workspace.yaml."""
+    ws = pkg.get("workspaces")
+    patterns = ws.get("packages", []) if isinstance(ws, dict) else (ws if isinstance(ws, list) else [])
+    pnpm = _read(repo_path, root, "pnpm-workspace.yaml")
+    if pnpm:
+        in_packages = False
+        for line in pnpm.splitlines():
+            if re.match(r"^packages\s*:", line):
+                in_packages = True
+                continue
+            if in_packages:
+                m = re.match(r"^\s*-\s*['\"]?([^'\"#]+?)['\"]?\s*(#.*)?$", line)
+                if m:
+                    patterns = list(patterns) + [m.group(1)]
+                elif line.strip() and not line.startswith((" ", "\t")):
+                    in_packages = False
+    return _match_members(root, patterns, npm_dirs) if patterns else []
+
+
+def _uv_workspace_members(root: str, pyproject: dict, py_dirs: Set[str]) -> List[str]:
+    """Members of a `[tool.uv.workspace]` declared in `root`'s pyproject.toml."""
+    ws = ((pyproject.get("tool") or {}).get("uv") or {}).get("workspace") or {}
+    patterns = list(ws.get("members") or []) + [f"!{p}" for p in ws.get("exclude") or [] if isinstance(p, str)]
+    return _match_members(root, patterns, py_dirs) if ws.get("members") else []
+
+
+def _js_entry(pkg: dict, pm: str, root: str, install: Optional[str] = None, workspace: Optional[str] = None,
+              notes: Optional[List[str]] = None) -> dict:
+    scripts = pkg.get("scripts") or {}
+    script = lambda s: (f"{pm} run {s}" if pm != "npm" or s not in ("start", "test") else f"npm {s}")
+    run = next((script(s) for s in ("dev", "start", "serve", "preview") if s in scripts), None)
+    test = scripts.get("test")
+    return _entry(
+        "JavaScript/TypeScript", pm, root, workspace=workspace,
+        install=install,
+        build=script("build") if "build" in scripts else None,
+        run=run or ("node " + pkg["main"] if pkg.get("main") else None),
+        test=script("test") if test and "no test specified" not in test else None,
+        notes=notes,
+    )
+
+
+def _python_entry(repo_path: str, root: str, pyproject: dict, files: Dict[str, dict], dep_sets: Dict[str, Set[str]],
+                  tool: Optional[str] = None, workspace: Optional[str] = None, exclude: Iterable[str] = (),
+                  notes: Optional[List[str]] = None) -> dict:
+    has = lambda name: os.path.exists(os.path.join(repo_path, root, name))
+    tool_cfg = pyproject.get("tool") or {}
+    if tool is None:
+        if has("uv.lock") or "uv" in tool_cfg:
+            tool = "uv"
+        elif has("poetry.lock") or "poetry" in tool_cfg:
+            tool = "poetry"
+        elif has("pdm.lock") or "pdm" in tool_cfg:
+            tool = "pdm"
+        elif has("Pipfile"):
+            tool = "pipenv"
+        else:
+            tool = "pip"
+    runner = {"uv": "uv run ", "poetry": "poetry run ", "pdm": "pdm run ", "pipenv": "pipenv run "}.get(tool, "")
+    setup, install = None, {"uv": "uv sync", "poetry": "poetry install", "pdm": "pdm install",
+                            "pipenv": "pipenv install --dev"}.get(tool)
+    if tool == "pip":
+        setup = ["python -m venv .venv", "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate"]
+        if has("requirements.txt"):
+            install = "pip install -r requirements.txt"
+        elif pyproject or has("setup.py"):
+            install = "pip install -e ."
+
+    excluded = tuple(f"{d}/" for d in exclude)
+    # The product's own modules first: a test that builds a FastAPI() app is not the app
+    py_files = sorted((p for p in files if (not root or p.startswith(root + "/")) and p.endswith(".py")
+                       and not p.startswith(excluded)), key=is_secondary)
+    run = None
+    scripts = (pyproject.get("project") or {}).get("scripts") or (tool_cfg.get("poetry") or {}).get("scripts") or {}
+    if has("manage.py"):
+        run = f"{runner}python manage.py runserver"
+    elif scripts:
+        run = f"{runner}{next(iter(scripts))}"
+    else:
+        for p in py_files:
+            content = files[p].get("content", "")
+            m = re.search(r"^(\w+)\s*=\s*FastAPI\(", content, re.M)
+            if m and _module_under(root, p):
+                run = f"{runner}uvicorn {_module_under(root, p)}:{m.group(1)} --reload"
+                break
+            m = re.search(r"^(\w+)\s*=\s*Flask\(", content, re.M)
+            if m and _module_under(root, p):
+                run = f"{runner}flask --app {_module_under(root, p)} run"
+                break
+            if "streamlit" in dep_sets.get("python", set()) and re.search(r"^import streamlit", content, re.M):
+                run = f"{runner}streamlit run {p[len(root) + 1:] if root else p}"
+                break
+        if run is None:
+            mains = [p for p in py_files if p.endswith("/__main__.py")]
+            if mains and _module_under(root, mains[0]):
+                run = f"{runner}python -m {_module_under(root, mains[0]).rsplit('.', 1)[0]}"
+            else:
+                entry = next((p for p in py_files if files[p].get("has_main") and not is_secondary(p)), None)
+                if entry:
+                    run = f"{runner}python {entry[len(root) + 1:] if root else entry}"
+    has_tests = any(re.search(r"(^|/)(tests?/|test_[^/]*\.py$)", p) for p in py_files)
+    test = f"{runner}pytest" if ("pytest" in dep_sets.get("python", set()) or has_tests) else None
+    return _entry("Python", tool, root, setup=setup, install=install, run=run, test=test,
+                  workspace=workspace, notes=notes)
+
+
 def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[str, dict],
                   dep_sets: Dict[str, Set[str]]) -> List[dict]:
     has = lambda root, name: os.path.exists(os.path.join(repo_path, root, name))
-    under = lambda root: [p for p in files if not root or p.startswith(root + "/")]
     systems: List[dict] = []
 
     # ---- JavaScript / TypeScript
+    npm_dirs = [posixpath.dirname(p) for p in manifests.get("npm", [])]
     for root in _roots(manifests.get("npm", [])):
         try:
             pkg = json.loads(_read(repo_path, root, "package.json"))
         except Exception:
             continue
-        scripts = pkg.get("scripts") or {}
         pm = _js_package_manager(repo_path, root)
-        script = lambda s: (f"{pm} run {s}" if pm != "npm" or s not in ("start", "test") else f"npm {s}")
-        run = next((script(s) for s in ("dev", "start", "serve", "preview") if s in scripts), None)
-        test = scripts.get("test")
-        systems.append(_entry(
-            "JavaScript/TypeScript", pm, root,
-            install=f"{pm} install",
-            build=script("build") if "build" in scripts else None,
-            run=run or ("node " + pkg["main"] if pkg.get("main") else None),
-            test=script("test") if test and "no test specified" not in test else None,
-        ))
+        members = _js_workspace_members(repo_path, root, pkg, npm_dirs)
+        member_names = ", ".join(f"{m}/" for m in members)
+        notes = [f"Workspace root: `{pm} install` here installs every member ({member_names})."] if members else []
+        systems.append(_js_entry(pkg, pm, root, install=f"{pm} install", notes=notes))
+        for member in members:
+            try:
+                member_pkg = json.loads(_read(repo_path, member, "package.json"))
+            except Exception:
+                continue
+            entry = _js_entry(member_pkg, pm, member, workspace=root,
+                              notes=[f"Workspace member: install dependencies from the workspace root "
+                                     f"(`{pm} install` in {root or '.'}/), then run these from {member}/."])
+            if any(entry[p] for p in ("build", "run", "test")):
+                systems.append(entry)
 
     # ---- Python
     py_manifests = (manifests.get("pyproject", []) + manifests.get("setuppy", []) + manifests.get("pipfile", [])
                     + manifests.get("requirements", []) + manifests.get("django", []) + manifests.get("setupcfg", []))
+    py_dirs = {posixpath.dirname(p) for p in py_manifests}
     for root in _roots(py_manifests):
         pyproject = _toml(repo_path, root, "pyproject.toml") if has(root, "pyproject.toml") else {}
-        tool_cfg = pyproject.get("tool") or {}
-        if has(root, "uv.lock") or "uv" in tool_cfg:
-            tool = "uv"
-        elif has(root, "poetry.lock") or "poetry" in tool_cfg:
-            tool = "poetry"
-        elif has(root, "pdm.lock") or "pdm" in tool_cfg:
-            tool = "pdm"
-        elif has(root, "Pipfile"):
-            tool = "pipenv"
-        else:
-            tool = "pip"
-        runner = {"uv": "uv run ", "poetry": "poetry run ", "pdm": "pdm run ", "pipenv": "pipenv run "}.get(tool, "")
-        setup, install = None, {"uv": "uv sync", "poetry": "poetry install", "pdm": "pdm install",
-                                "pipenv": "pipenv install --dev"}.get(tool)
-        if tool == "pip":
-            setup = ["python -m venv .venv", "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate"]
-            if has(root, "requirements.txt"):
-                install = "pip install -r requirements.txt"
-            elif pyproject or has(root, "setup.py"):
-                install = "pip install -e ."
-
-        run = None
-        py_files = [p for p in under(root) if p.endswith(".py")]
-        scripts = (pyproject.get("project") or {}).get("scripts") or (tool_cfg.get("poetry") or {}).get("scripts") or {}
-        if has(root, "manage.py"):
-            run = f"{runner}python manage.py runserver"
-        elif scripts:
-            run = f"{runner}{next(iter(scripts))}"
-        else:
-            for p in py_files:
-                content = files[p].get("content", "")
-                m = re.search(r"^(\w+)\s*=\s*FastAPI\(", content, re.M)
-                if m and _module_under(root, p):
-                    run = f"{runner}uvicorn {_module_under(root, p)}:{m.group(1)} --reload"
-                    break
-                m = re.search(r"^(\w+)\s*=\s*Flask\(", content, re.M)
-                if m and _module_under(root, p):
-                    run = f"{runner}flask --app {_module_under(root, p)} run"
-                    break
-                if "streamlit" in dep_sets.get("python", set()) and re.search(r"^import streamlit", content, re.M):
-                    run = f"{runner}streamlit run {p[len(root) + 1:] if root else p}"
-                    break
-            if run is None:
-                mains = [p for p in py_files if p.endswith("/__main__.py")]
-                if mains and _module_under(root, mains[0]):
-                    run = f"{runner}python -m {_module_under(root, mains[0]).rsplit('.', 1)[0]}"
-                else:
-                    entry = next((p for p in py_files if files[p].get("has_main")
-                                  and not _SECONDARY_DIR_RE.search(p)), None)
-                    if entry:
-                        run = f"{runner}python {entry[len(root) + 1:] if root else entry}"
-        has_tests = any(re.search(r"(^|/)(tests?/|test_[^/]*\.py$)", p) for p in py_files)
-        test = f"{runner}pytest" if ("pytest" in dep_sets.get("python", set()) or has_tests) else None
-        systems.append(_entry("Python", tool, root, setup=setup, install=install, run=run, test=test))
+        members = _uv_workspace_members(root, pyproject, py_dirs)
+        if not members:
+            systems.append(_python_entry(repo_path, root, pyproject, files, dep_sets))
+            continue
+        # uv workspace: commands run from each member's directory (`uv run` finds the workspace)
+        if "project" in pyproject:
+            systems.append(_python_entry(repo_path, root, pyproject, files, dep_sets, tool="uv",
+                                         exclude=members))
+        for member in members:
+            member_pyproject = _toml(repo_path, member, "pyproject.toml") if has(member, "pyproject.toml") else {}
+            systems.append(_python_entry(
+                repo_path, member, member_pyproject, files, dep_sets, tool="uv", workspace=root,
+                notes=[f"uv workspace member of {root or 'the repository root'}: `uv sync` installs the "
+                       f"whole workspace; run the commands from {member}/."]))
 
     # ---- Rust
     rs_files = [p for p in files if p.endswith(".rs")]
@@ -479,7 +579,7 @@ def build_systems(repo_path: str, manifests: Dict[str, List[str]], files: Dict[s
             text = _read(repo_path, m)
             testing = testing or bool(re.search(r"enable_testing|add_test\s*\(|gtest_discover_tests|catch_discover_tests", text, re.I))
             sub = posixpath.dirname(m)[len(root):].strip("/") if root else posixpath.dirname(m)
-            if _SECONDARY_DIR_RE.search(sub):
+            if is_secondary_dir(sub):
                 continue  # executables under test/, examples/, ... are not the app
             for exe in re.findall(r"add_executable\s*\(\s*([A-Za-z0-9_\-${}]+)", text, re.I):
                 if "$" not in exe and not re.search(r"test|bench|example", exe, re.I):

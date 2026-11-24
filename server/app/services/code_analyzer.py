@@ -1,5 +1,6 @@
 import os
 import ast
+import posixpath
 import re
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Dict, List, Optional, Any, Set
 
 from app.services import source_parser
 from app.services import project_manifests
+from app.services import path_classifier
 from app.services.import_resolver import ImportResolver
 from app.services.fs_utils import inside_repo, read_repo_text
 
@@ -106,13 +108,6 @@ class CodeAnalyzer:
         'Axum': re.compile(r'\.route\s*\(\s*"([^"]+)"\s*,\s*(get|post|put|delete|patch)\s*\(\s*([\w:]+)'),
     }
 
-    DB_QUERY_REGEX = re.compile(
-        r"\.(find|findOne|findById|save|create|update|delete|remove|count|aggregate|select|insert|where|first|all)\s*\(|"
-        r"objects\.(all|filter|get|create|update|delete)\s*\(|"
-        r"(?:SELECT|INSERT|UPDATE|DELETE)\s+.*?\s+FROM\s+",
-        re.IGNORECASE
-    )
-
     RESERVED_KEYWORDS = {
         'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default',
         'break', 'continue', 'return', 'try', 'catch', 'finally', 'throw',
@@ -170,15 +165,7 @@ class CodeAnalyzer:
         self._file_contents.clear()
 
         # Build architecture model
-        from app.services.architecture_service import ArchitectureAnalyzer
-        arch_data = {
-            'files': self.files,
-            'frameworks': frameworks,
-            'databases': databases,
-            'file_dependencies': file_dependencies,
-            'entry_points': self._entry_points(),
-        }
-        architecture = ArchitectureAnalyzer(arch_data).generate()
+        architecture = self._architecture(frameworks, databases, file_dependencies, self._entry_points())
 
         return {
             "languages": self._language_stats(),
@@ -389,13 +376,81 @@ class CodeAnalyzer:
         return project_manifests.extract_dependencies(str(self.repo_path), self._manifests())
 
     def _collect_dependency_sets(self, dependencies: Dict[str, Dict[str, List[str]]]) -> None:
-        """Lower-cased dependency names per ecosystem, used by framework/database detection."""
-        self.dep_sets = project_manifests.dependency_sets(dependencies)
+        """Lower-cased dependency names per ecosystem, used by framework/database detection.
+        Only manifests of the product itself count: `examples/celery/requirements.txt` does not
+        make the repository a Celery + Redis project."""
+        detection = self._primary_dependency_groups(dependencies)
+        self.dep_sets = project_manifests.dependency_sets(detection)
         # dev/test/build groups excluded: an Express devDependency used as a test server
         # doesn't make the project an Express backend
-        self.runtime_dep_sets = project_manifests.dependency_sets(dependencies, runtime_only=True)
+        self.runtime_dep_sets = project_manifests.dependency_sets(detection, runtime_only=True)
         self.all_npm_deps.update(self.dep_sets.get("javascript", set()))
         self.all_python_deps.update(self.dep_sets.get("python", set()))
+
+    @staticmethod
+    def _primary_dependency_groups(dependencies: Dict[str, Dict[str, List[str]]]) -> Dict[str, Dict[str, List[str]]]:
+        """Dependency groups whose manifest lives outside tests / examples / docs. Falls back to
+        every group when the repository has no such manifest (a collection of examples)."""
+        def manifest_dir(key: str) -> str:
+            # "examples/celery/pyproject.toml (dev/optional)", "frontend/dependencies", "dependencies"
+            return posixpath.dirname(key.split(" (", 1)[0])
+
+        primary = {eco: {k: v for k, v in groups.items() if not path_classifier.is_secondary_dir(manifest_dir(k))}
+                   for eco, groups in dependencies.items()}
+        return primary if any(primary.values()) else dependencies
+
+    def _primary_files(self) -> List[str]:
+        return path_classifier.primary_paths(self.files)
+
+    def _primary_imports(self) -> List[str]:
+        primary = self._primary_files()
+        return [imp for p in primary for imp in self.files[p].get("imports", [])]
+
+    # Manifests that mark a sub-project root (Makefiles / CMakeLists.txt sit in every sub-directory)
+    _PROJECT_ROOT_MANIFESTS = ("npm", "pyproject", "setuppy", "pipfile", "requirements", "maven", "gradle",
+                               "cargo", "gomod", "django")
+
+    def _project_roots(self) -> List[str]:
+        """Directories holding a project manifest: the sub-projects of a monorepo."""
+        manifests = self._manifests()
+        return sorted({posixpath.dirname(p) for kind in self._PROJECT_ROOT_MANIFESTS
+                       for p in manifests.get(kind, [])} - {""})
+
+    def _architecture(self, frameworks: Dict, databases: List[str], file_dependencies: Dict,
+                      entry_points: List[str]) -> Dict[str, Any]:
+        from app.services.architecture_service import ArchitectureAnalyzer
+        return ArchitectureAnalyzer({
+            'files': self.files,
+            'frameworks': frameworks,
+            'databases': databases,
+            'file_dependencies': file_dependencies,
+            'entry_points': entry_points,
+            'project_roots': self._project_roots(),
+            'framework_families': {k: sorted(v) for k, v in self.framework_families().items()},
+        }).generate()
+
+    # Frameworks detected outside _FRAMEWORK_RULES, and the language family they are written in
+    _FRAMEWORK_FAMILIES_EXTRA = {
+        "Next.js": "javascript", "React": "javascript", "Vue.js": "javascript", "Nuxt.js": "javascript",
+        "Angular": "javascript", "Svelte": "javascript", "SvelteKit": "javascript", "Vite": "javascript",
+        "Tailwind CSS": "javascript", "Express.js": "javascript", "NestJS": "javascript", "Koa": "javascript",
+        "Hapi": "javascript", "FastAPI": "python", "Flask": "python", "Django": "python",
+        "Spring Boot": "jvm", "Spring": "jvm", "Android": "jvm", "Gin (Go)": "go", "Fiber (Go)": "go",
+        "Echo (Go)": "go", "Ruby on Rails": "ruby", "Laravel": "php", "Unreal Engine": "cpp",
+    }
+    _ECOSYSTEM_FAMILY = {"python": "python", "javascript": "javascript", "java": "jvm", "rust": "rust", "cpp": "cpp"}
+
+    @classmethod
+    def framework_families(cls) -> Dict[str, Set[str]]:
+        """Framework name -> language families it belongs to (gRPC exists in several)."""
+        out: Dict[str, Set[str]] = {}
+        for eco, sides in cls._FRAMEWORK_RULES.items():
+            for rules in sides.values():
+                for fw in rules.values():
+                    out.setdefault(fw, set()).add(cls._ECOSYSTEM_FAMILY[eco])
+        for fw, fam in cls._FRAMEWORK_FAMILIES_EXTRA.items():
+            out.setdefault(fw, set()).add(fam)
+        return out
 
     def _build_systems(self) -> List[Dict[str, Any]]:
         """Install / build / run / test commands per detected project root."""
@@ -414,12 +469,13 @@ class CodeAnalyzer:
         npm_deps = self.all_npm_deps
         python_deps = self.all_python_deps
 
-        # Check for config files in entire repo
+        # Check for config files in the repo (not in tests / examples / docs)
         config_files = set()
         for _, dirs, files in os.walk(self.repo_path):
-            dirs[:] = [d for d in dirs if self._keep_dir(d)]
+            dirs[:] = [d for d in dirs if self._keep_dir(d) and not path_classifier.is_secondary_dir(d)]
             for f in files:
                 config_files.add(f.lower())
+        primary_imports = self._primary_imports()
 
         # ===== Frontend frameworks =====
 
@@ -481,7 +537,7 @@ class CodeAnalyzer:
             backend.append('Hapi')
 
         # Java - Spring Boot (check for specific Spring files/imports)
-        if any('springframework' in imp for imp in self.all_imports):
+        if any('springframework' in imp for imp in primary_imports):
             backend.append('Spring Boot')
         elif 'pom.xml' in config_files or 'build.gradle' in config_files:
             # Check if pom.xml or build.gradle contains spring
@@ -492,9 +548,9 @@ class CodeAnalyzer:
                     break
 
         # Go frameworks - only detect if we actually have Go files
-        has_go_files = any(meta.get('language') == 'Go' for meta in self.files.values())
+        has_go_files = any(p.endswith('.go') for p in self._primary_files())
         if has_go_files:
-            go_imports = [imp for imp in self.all_imports if 'github.com' in imp or imp.startswith('go/')]
+            go_imports = [imp for imp in primary_imports if 'github.com' in imp or imp.startswith('go/')]
             go_imports_str = ' '.join(go_imports)
             if 'gin-gonic/gin' in go_imports_str:
                 backend.append('Gin (Go)')
@@ -563,7 +619,7 @@ class CodeAnalyzer:
 
     def _has_sources(self, ecosystem: str) -> bool:
         exts = self._ECOSYSTEM_EXTS.get(ecosystem)
-        return exts is None or any(p.endswith(exts) for p in self.files)
+        return exts is None or any(p.endswith(exts) for p in self._primary_files())
 
     def _detect_more_frameworks(self, frontend: List[str], backend: List[str], config_files: Set[str]) -> None:
         for eco, sides in self._FRAMEWORK_RULES.items():
@@ -724,9 +780,6 @@ class CodeAnalyzer:
     _NAME_CONVENTION_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
                              ".go", ".rb", ".php", ".vue", ".svelte", ".swift", ".kt", ".scala", ".cs"}
 
-    _SECONDARY_PATH_RE = re.compile(
-        r"(^|/)(tests?|__tests__|examples?|samples?|demos?|docs?|fixtures?|benchmarks?|benches|testdata|e2e)(/|$)", re.I)
-
     def _entry_points(self) -> List[str]:
         """Detect application entry points: strong signals first, then naming conventions."""
         if self._entry_cache is not None:
@@ -744,13 +797,13 @@ class CodeAnalyzer:
             elif ext == ".py" and basename in ("__main__", "manage", "wsgi", "asgi"):
                 strong.append(path)
             elif ext in self._NAME_CONVENTION_EXTS and basename in self.ENTRY_BASENAMES \
-                    and not self._SECONDARY_PATH_RE.search(path):
+                    and path_classifier.is_primary(path):
                 weak.append(path)
         strong.extend(self._manifest_entry_points())
 
         strong_set = set(strong)
         candidates = strong_set | set(weak)
-        result = sorted(candidates, key=lambda p: (bool(self._SECONDARY_PATH_RE.search(p)), p not in strong_set, p))
+        result = sorted(candidates, key=lambda p: (path_classifier.is_secondary(p), p not in strong_set, p))
         self._entry_cache = result
         return list(result)
 
@@ -801,12 +854,10 @@ class CodeAnalyzer:
         important_files = []
 
         entry_set = set(self._entry_points())
+        primary = set(path_classifier.primary_paths(self.files))
         for path, meta in self.files.items():
-            path_lower = path.lower()
-
-            # Skip test files (pytest, Jest/Vitest, Go, JUnit, Rust/C++ test dirs)
-            if any(x in path_lower for x in ['test_', '_test', 'tests/', '/test/', '.test.', '.spec.', '__tests__/']) \
-                    or path.endswith(('Test.java', 'Tests.java', 'IT.java')):
+            # Skip tests, examples, docs and generated files (generated API clients, *.min.js, ...)
+            if path not in primary:
                 continue
 
             # Priority 1: Entry point files
@@ -1108,6 +1159,9 @@ class CodeAnalyzer:
         """
         Build a call graph showing which functions call which other functions.
         Also traces cross-boundary calls (Frontend -> API -> Backend -> DB).
+
+        Node ids are `file::Class.method` (or `file::function`) so that methods of different
+        classes that share a name stay apart. Calls only resolve within one language family.
         """
         call_graph: Dict[str, Dict[str, Any]] = {}
         self.found_api_calls = []
@@ -1115,33 +1169,40 @@ class CodeAnalyzer:
         self.found_db_queries = []
 
         # Phase 1: Build registry of all known functions
-        func_registry: Dict[str, List[str]] = {}
+        func_registry: Dict[str, List[str]] = {}          # bare name -> node ids (all languages)
+        self._fam_registry: Dict[tuple, List[str]] = {}   # (language family, bare name) -> node ids
+        # node id -> (parent container, owning class): parent is the enclosing class / impl /
+        # function; owning class is set only for methods (for `self.x()` and qualified calls).
+        symbol_info: Dict[str, tuple] = {}
 
         for file_path, meta in self.files.items():
             language = meta.get('language', 'Unknown')
-            for func_name in meta.get('functions', []):
-                qualified_id = f"{file_path}::{func_name}"
+            category = path_classifier.classify_path(file_path)
+            family = path_classifier.language_family(file_path)
+            if "symbols" in meta:
+                entries = [(s["name"], self._qualname(s), s.get("parent"), s["kind"] == "method")
+                           for s in meta["symbols"] if s["kind"] in source_parser.FUNCTION_KINDS]
+            else:
+                entries = [(n, n, None, False) for n in meta.get('functions', [])]
+            for func_name, qual, parent, is_method in entries:
+                qualified_id = f"{file_path}::{qual}"
+                if qualified_id in call_graph:
+                    continue  # e.g. a property getter and its setter
                 call_graph[qualified_id] = {
-                    "name": func_name,
+                    "name": qual,
                     "file": file_path,
                     "calls": [],
                     "called_by": [],
                     "language": language,
-                    "type": "function"
+                    "type": "function",
+                    "category": category,
                 }
-                if func_name not in func_registry:
-                    func_registry[func_name] = []
-                func_registry[func_name].append(qualified_id)
+                func_registry.setdefault(func_name, []).append(qualified_id)
+                self._fam_registry.setdefault((family, func_name), []).append(qualified_id)
+                symbol_info[qualified_id] = (parent, parent if is_method else None)
 
         # Phase 2: Extract backend routes
         self._extract_all_routes(frameworks)
-
-        # Parents of each registered function (class / impl / struct), for qualified calls
-        symbol_parents: Dict[str, Set[str]] = {}
-        for file_path, meta in self.files.items():
-            for sym in meta.get("symbols", []):
-                if sym.get("parent") and sym["kind"] in ("function", "method", "macro"):
-                    symbol_parents.setdefault(f"{file_path}::{sym['name']}", set()).add(sym["parent"])
 
         # Barrel files (__init__.py, index.ts, mod.rs, lib.rs) mostly re-export: importing one
         # makes the files *it* imports visible too (`from click import echo` -> utils.py).
@@ -1162,7 +1223,7 @@ class CodeAnalyzer:
 
             if "symbols" in meta:  # tree-sitter: real call sites per function
                 self._extract_symbol_calls(file_path, meta, content, call_graph, func_registry,
-                                           expanded_deps, symbol_parents)
+                                           expanded_deps, symbol_info)
                 continue
             if not content:
                 continue
@@ -1188,82 +1249,280 @@ class CodeAnalyzer:
 
         return call_graph
 
+    @staticmethod
+    def _qualname(sym: Dict) -> str:
+        """`Class.method` for members, `outer.inner` for nested functions, else the bare name
+        (the same naming the chunker uses for chunk symbols)."""
+        return f"{sym['parent']}.{sym['name']}" if sym.get("parent") else sym["name"]
+
+    def _candidates(self, name: str, current_file: str, func_registry: Dict) -> List[str]:
+        """Registered functions named `name` written in the same language family as `current_file`."""
+        fam_registry = getattr(self, "_fam_registry", None)
+        family = path_classifier.language_family(current_file)
+        if fam_registry is not None:
+            return fam_registry.get((family, name), [])
+        return [c for c in func_registry.get(name, [])
+                if path_classifier.language_family(c.split('::', 1)[0]) == family]
+
+    @staticmethod
+    def _prefer_primary(current_file: str, candidates: List[str]) -> List[str]:
+        """For a call from the product's own code, drop test / example / generated candidates
+        when a primary one exists (unresolved-name fallback only)."""
+        if not path_classifier.is_primary(current_file):
+            return candidates
+        primary = [c for c in candidates if path_classifier.is_primary(c.split('::', 1)[0])]
+        return primary or candidates
+
+    MAX_AMBIGUOUS_TARGETS = 3
+
+    @classmethod
+    def _unambiguous(cls, targets: List[str]) -> List[str]:
+        """`obj.save()` with ten classes defining `save` in reach says nothing about which one runs:
+        link a few plausible targets, not all of them."""
+        return targets if len(targets) <= cls.MAX_AMBIGUOUS_TARGETS else []
+
     _JS_EXTS = {'.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.mts', '.cts'}
     _SELF_QUALIFIERS = {"self", "this", "Self", "super", "cls"}
+    # Languages where a bare `name()` can never call a method (only a function or a constructor)
+    _BARE_CALLS_SKIP_METHODS = {"python", "javascript", "rust"}
 
     def _extract_symbol_calls(self, file_path: str, meta: Dict, content: str, call_graph: Dict,
                               func_registry: Dict, file_dependencies: Dict,
-                              symbol_parents: Dict[str, Set[str]]) -> None:
+                              symbol_info: Dict[str, tuple]) -> None:
         """Call edges from parsed call sites (tree-sitter), plus API/DB cross-boundary hints."""
         resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
         ext = meta.get('extension', '')
         is_js, is_py = ext in self._JS_EXTS, ext in ('.py', '.pyi')
         lines = content.splitlines() if (content and (is_js or is_py)) else []
+        db_capable = self._db_capable(file_path, meta) if lines else False
 
         for sym in meta.get("symbols", []):
-            if sym["kind"] not in ("function", "method", "macro"):
+            if sym["kind"] not in source_parser.FUNCTION_KINDS:
                 continue
-            caller_id = f"{file_path}::{sym['name']}"
+            caller_id = f"{file_path}::{self._qualname(sym)}"
             if caller_id not in call_graph:
                 continue
+            caller_class = sym.get("parent") if sym["kind"] == "method" else None
             calls = call_graph[caller_id]['calls']
             for name, qualifier, is_member in sym.get("calls", []):
                 if name not in func_registry:
                     continue
-                for target_id in self._resolve_symbol_call(name, qualifier, is_member, file_path,
-                                                           func_registry, resolved_deps, symbol_parents):
+                for target_id in self._resolve_symbol_call(name, qualifier, is_member, file_path, caller_class,
+                                                           func_registry, resolved_deps, symbol_info):
                     if target_id != caller_id and target_id not in calls:
                         calls.append(target_id)
 
             if lines:
                 body = "\n".join(lines[sym["start_line"] - 1: sym["end_line"]])
                 if is_js:
-                    for api_match in self.API_CALL_REGEX.finditer(body):
-                        path = api_match.group(1) or api_match.group(4)
-                        method = api_match.group(2) or api_match.group(3) or 'get'
-                        if path:
-                            self.found_api_calls.append({'caller': caller_id, 'file': file_path,
-                                                         'path': path, 'method': method.lower()})
-                for db_match in self.DB_QUERY_REGEX.finditer(body):
-                    op = db_match.group(1) or db_match.group(2) or 'query'
-                    self.found_db_queries.append({'caller': caller_id, 'file': file_path, 'op': op.lower()})
+                    for api in self._api_calls(body):
+                        self.found_api_calls.append({'caller': caller_id, 'file': file_path, **api})
+                for op in self._db_ops(body, 'javascript' if is_js else 'python', db_capable):
+                    self.found_db_queries.append({'caller': caller_id, 'file': file_path, 'op': op})
 
     def _resolve_symbol_call(self, name: str, qualifier: Optional[str], is_member: bool, current_file: str,
-                             func_registry: Dict, resolved_deps: Set[str],
-                             symbol_parents: Dict[str, Set[str]]) -> List[str]:
+                             caller_class: Optional[str], func_registry: Dict, resolved_deps: Set[str],
+                             symbol_info: Dict[str, tuple]) -> List[str]:
         """
-        Resolve a call to registered functions:
-          self.x() / this.x()   -> same file (same class), else imported files
+        Resolve a call to registered functions of the caller's language family:
+          self.x() / this.x()   -> a method of the caller's own class, else same file, else imported
           Type::x() / Type.x()  -> functions whose parent is Type (impl/class), else module `Type`
           plain / obj.x()       -> same file, then imported files, then unambiguous global matches
         """
-        candidates = func_registry.get(name, [])
+        candidates = self._candidates(name, current_file, func_registry)
         if not candidates:
             return []
-        same_file = [c for c in candidates if c.startswith(f"{current_file}::")]
-        imported = [c for c in candidates if c.split('::', 1)[0] in resolved_deps]
+        file_of = lambda c: c.split('::', 1)[0]
+        parent_of = lambda c: symbol_info.get(c, (None, None))[0]
+        class_of = lambda c: symbol_info.get(c, (None, None))[1]
+        same_file = [c for c in candidates if file_of(c) == current_file]
+        imported = [c for c in candidates if file_of(c) in resolved_deps]
 
         if qualifier in self._SELF_QUALIFIERS:
-            return same_file or imported
+            if caller_class:
+                own = [c for c in same_file if class_of(c) == caller_class]
+                if own:
+                    return own
+                # Inherited: a method of another class in this file, else of an imported one
+                for tier in ([c for c in same_file if class_of(c)], [c for c in imported if class_of(c)]):
+                    if tier:
+                        return self._unambiguous(tier)
+            return self._unambiguous(same_file or imported)
         if qualifier:
-            by_parent = [c for c in candidates if qualifier in symbol_parents.get(c, ())]
+            by_parent = [c for c in candidates if parent_of(c) == qualifier]
             if by_parent:
                 preferred = [c for c in by_parent if c in same_file or c in imported]
                 return preferred or by_parent[:3]
             # module / package qualifier: utils.fmt(), click.echo() (package dir), routes::serve()
             by_module = [c for c in candidates
-                         if Path(c.split('::', 1)[0]).stem == qualifier or Path(c.split('::', 1)[0]).parent.name == qualifier]
+                         if Path(file_of(c)).stem == qualifier or Path(file_of(c)).parent.name == qualifier]
             if by_module:
                 preferred = [c for c in by_module if c in imported]
                 return preferred or by_module[:3]
+        elif not is_member:
+            family = path_classifier.language_family(current_file)
+            if family in self._BARE_CALLS_SKIP_METHODS:
+                # `open_session()` is never `SomeClass.open_session` (constructors aside)
+                bare_ok = lambda c: class_of(c) is None or class_of(c) == name
+                candidates = [c for c in candidates if bare_ok(c)]
+                same_file = [c for c in same_file if bare_ok(c)]
+                imported = [c for c in imported if bare_ok(c)]
+            elif caller_class:
+                # Java / C++: an unqualified call inside a class targets that class first
+                own = [c for c in same_file if class_of(c) == caller_class]
+                if own:
+                    return own
         if same_file:
-            return same_file
+            return self._unambiguous(same_file) if is_member else same_file
         if imported:
-            return imported
+            return self._unambiguous(imported) if is_member else imported
         # Unknown receiver / not imported: only link when unambiguous
+        candidates = self._prefer_primary(current_file, candidates)
         if is_member:
             return candidates if len(candidates) == 1 else []
         return candidates if len(candidates) <= 3 else []
+
+    # ---- Database operations ------------------------------------------------
+    # A DB node is only drawn for calls on a known database client / ORM, never for any
+    # `.get(` / `.update(` / `.filter(` (dict.update, hmac.update, list filtering, ...).
+    _DB_OP_KIND = {
+        **{m: "SELECT" for m in (
+            "find", "findone", "find_one", "findmany", "findunique", "finduniqueorthrow", "findfirst",
+            "findfirstorthrow", "findbyid", "findall", "findbypk", "findandcountall", "findby", "findoneby",
+            "get", "scalars", "scalar", "select", "fetch", "fetchone", "fetchall", "fetchmany", "fetchrow",
+            "fetchval", "count", "count_documents", "countdocuments", "aggregate", "groupby", "all", "filter",
+            "exclude", "first", "last", "values", "values_list", "exists", "in_bulk", "order_by",
+            "select_related", "prefetch_related", "annotate", "where")},
+        **{m: "INSERT" for m in (
+            "add", "add_all", "bulk_save_objects", "insert", "insert_one", "insertone", "insert_many",
+            "insertmany", "create", "createmany", "bulkcreate", "bulk_create", "save", "get_or_create",
+            "findorcreate")},
+        **{m: "UPDATE" for m in (
+            "update", "update_one", "updateone", "update_many", "updatemany", "upsert", "merge",
+            "replace_one", "replaceone", "find_one_and_update", "findoneandupdate", "findbyidandupdate",
+            "update_or_create", "bulk_update", "bulkwrite")},
+        **{m: "DELETE" for m in (
+            "delete", "remove", "destroy", "delete_one", "deleteone", "delete_many", "deletemany",
+            "find_one_and_delete", "findoneanddelete", "findbyidanddelete")},
+    }
+    # session.exec(...), cursor.execute(...), db.query(...), self.session.add(...), knex.select(...)
+    _DB_RECEIVER_RE = re.compile(
+        r"(?:(?<![\w.])|(?<=self\.)|(?<=this\.)|(?<=cls\.)|(?<=\bdb\.))"
+        r"(?:session|db_session|dbsession|db|database|cursor|cur|conn|connection|engine|tx|trx|pool|em|"
+        r"entityManager|knex)\.(execute|executemany|exec|query|scalars|scalar|add|add_all|bulk_save_objects|"
+        r"delete|merge|get(?=\s*\(\s*[A-Z][a-z])|update(?<=\bdb\.update)|find|findOne|insert|upsert|select|save|"
+        r"remove|fetch|fetchone|fetchall|"
+        r"fetchmany|fetchrow|fetchval|raw)\s*\(")
+    # Driver / ODM methods whose names only exist on database clients (pymongo, mongoose, sequelize)
+    _DB_METHOD_RE = re.compile(
+        r"\.(insert_one|insert_many|update_one|update_many|delete_one|delete_many|replace_one|find_one|"
+        r"find_one_and_update|find_one_and_delete|count_documents|insertOne|insertMany|updateOne|updateMany|"
+        r"deleteOne|deleteMany|replaceOne|countDocuments|findOneAndUpdate|findOneAndDelete|findByIdAndUpdate|"
+        r"findByIdAndDelete|bulkWrite|findById|findByPk|findAndCountAll|bulkCreate|bulk_create)\s*\(")
+    # Django ORM: Model.objects.filter(...)
+    _DJANGO_ORM_RE = re.compile(
+        r"\.objects\.(?:using\([^)]*\)\.)?(all|filter|get|create|update|delete|exclude|get_or_create|"
+        r"update_or_create|bulk_create|bulk_update|count|aggregate|values|values_list|first|last|order_by|"
+        r"select_related|prefetch_related|annotate|exists|in_bulk|raw)\s*\(")
+    # Prisma: prisma.user.findMany(...), prisma.$queryRaw`...`
+    _PRISMA_RE = re.compile(
+        r"\bprisma\.(?:\w+\.(findMany|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|create|createMany|"
+        r"update|updateMany|upsert|delete|deleteMany|count|aggregate|groupBy)\s*\(|\$(queryRaw|executeRaw|"
+        r"queryRawUnsafe|executeRawUnsafe))")
+    # Mongoose / Sequelize / TypeORM model statics: User.findOne(...), Post.create(...)
+    _MODEL_STATIC_RE = re.compile(
+        r"(?<![\w.$])([A-Z]\w*)\.(find|findOne|create|update|destroy|count|aggregate|exists|upsert|where)\s*\(")
+    _NON_MODEL_GLOBALS = {"Object", "Array", "Promise", "Math", "JSON", "Date", "Number", "String", "Reflect",
+                          "Map", "Set", "WeakMap", "Symbol", "Intl", "Buffer", "React", "Proxy", "URL", "Error"}
+    # SQL in a string literal (upper-case keywords, so UI text such as "Select a file from..." is ignored)
+    _SQL_LITERAL_RE = re.compile(
+        r"['\"`]\s*(?:(SELECT)\s[^'\"`]*?\bFROM\s|(INSERT)\s+INTO\s|(UPDATE)\s+[\w.\"`]+\s+SET\s|(DELETE)\s+FROM\s)")
+
+    _PY_DB_MODULE_RE = re.compile(
+        r"^(sqlalchemy|sqlmodel|sqlite3|psycopg|psycopg2|psycopg_pool|asyncpg|aiosqlite|aiomysql|pymongo|motor|"
+        r"pymysql|MySQLdb|mysql\.connector|django\.db|peewee|pony|tortoise|mongoengine|beanie|odmantic|databases|"
+        r"flask_sqlalchemy|piccolo|duckdb|cassandra|neo4j)(\.|$)")
+    _JS_DB_MODULE_RE = re.compile(
+        r"^(mongoose|mongodb|@prisma/client|prisma|sequelize|sequelize-typescript|typeorm|knex|pg|pg-promise|"
+        r"postgres|mysql|mysql2|mysql2/promise|better-sqlite3|sqlite|sqlite3|drizzle-orm|kysely|objection|"
+        r"@mikro-orm/[\w-]+|@supabase/supabase-js|@neondatabase/serverless|@planetscale/database)(/|$)")
+    _PY_DB_DEPS = {"sqlalchemy", "sqlmodel", "flask-sqlalchemy", "django", "psycopg2", "psycopg2-binary", "psycopg",
+                   "asyncpg", "aiosqlite", "aiomysql", "pymongo", "motor", "pymysql", "mysqlclient",
+                   "mysql-connector-python", "peewee", "pony", "tortoise-orm", "mongoengine", "beanie", "odmantic",
+                   "databases", "piccolo", "duckdb"}
+    _JS_DB_DEPS = {"mongoose", "mongodb", "@prisma/client", "prisma", "sequelize", "sequelize-typescript", "typeorm",
+                   "knex", "pg", "pg-promise", "postgres", "mysql", "mysql2", "better-sqlite3", "sqlite", "sqlite3",
+                   "drizzle-orm", "kysely", "objection", "@supabase/supabase-js"}
+    _JS_MODEL_ORMS = {"mongoose", "sequelize", "sequelize-typescript", "typeorm", "objection"}
+
+    def _db_capable(self, file_path: str, meta: Dict) -> bool:
+        """Whether a file talks to a database at all: it imports a database driver / ORM, or its
+        ecosystem depends on one. Generic receiver patterns are only trusted in such files."""
+        family = path_classifier.language_family(file_path)
+        imports = meta.get("imports", [])
+        dep_sets = getattr(self, "dep_sets", {}) or {}
+        if family == "python":
+            return bool(dep_sets.get("python", set()) & self._PY_DB_DEPS) \
+                or any(self._PY_DB_MODULE_RE.match(i.lstrip(".")) for i in imports)
+        if family == "javascript":
+            return bool(dep_sets.get("javascript", set()) & self._JS_DB_DEPS) \
+                or any(self._JS_DB_MODULE_RE.match(i) for i in imports)
+        return False
+
+    def _db_ops(self, body: str, family: str, capable: bool) -> List[str]:
+        """Database operations (SELECT / INSERT / UPDATE / DELETE / QUERY) made in a function body."""
+        ops: List[str] = []
+
+        def add(method: Optional[str], default: str = "QUERY"):
+            op = self._DB_OP_KIND.get((method or "").lower(), default)
+            if op not in ops:
+                ops.append(op)
+
+        for m in self._SQL_LITERAL_RE.finditer(body):
+            add(None, next(g for g in m.groups() if g))
+        if family == "python":
+            for m in self._DJANGO_ORM_RE.finditer(body):
+                add(m.group(1))
+        if family == "javascript":
+            for m in self._PRISMA_RE.finditer(body):
+                add(m.group(1))
+            if (getattr(self, "dep_sets", None) or {}).get("javascript", set()) & self._JS_MODEL_ORMS:
+                for m in self._MODEL_STATIC_RE.finditer(body):
+                    if m.group(1) not in self._NON_MODEL_GLOBALS:
+                        add(m.group(2))
+        if capable:
+            for m in self._DB_RECEIVER_RE.finditer(body):
+                add(m.group(1))
+            for m in self._DB_METHOD_RE.finditer(body):
+                add(m.group(1))
+        return ops
+
+    # ---- Frontend -> backend HTTP calls --------------------------------------
+    # Generated API clients (openapi-ts, orval, ...) pass request options: { method: "GET", url: "/api/v1/items/" }
+    # or call a verb method with them: client.post<Res, Err>({ url: "/api/v1/login/access-token" })
+    _URL_LITERAL_RE = re.compile(r"\burl\s*:\s*(['\"`])(/[^'\"`\s]*)\1")
+    _METHOD_LITERAL_RE = re.compile(r"\bmethod\s*:\s*['\"`](\w+)['\"`]", re.I)
+    _VERB_CALL_RE = re.compile(r"\.(get|post|put|patch|delete)\b[^(;\n]*\(\s*\{", re.I)
+
+    def _api_calls(self, body: str) -> List[Dict[str, str]]:
+        found: List[Dict[str, str]] = []
+        for api_match in self.API_CALL_REGEX.finditer(body):
+            path = api_match.group(1) or api_match.group(4)
+            method = api_match.group(2) or api_match.group(3) or 'get'
+            if path:
+                found.append({'path': path, 'method': method.lower()})
+        for m in self._URL_LITERAL_RE.finditer(body):
+            window_start = max(0, m.start() - 300)
+            window = body[window_start: m.end() + 300]
+            methods = [(abs(mm.start() + window_start - m.start()), mm.group(1))
+                       for mm in self._METHOD_LITERAL_RE.finditer(window)]
+            methods += [(m.start() - mm.start(), mm.group(1))
+                        for mm in self._VERB_CALL_RE.finditer(body, window_start, m.start())]
+            method = min(methods)[1] if methods else 'get'
+            entry = {'path': m.group(2), 'method': method.lower()}
+            if entry not in found:
+                found.append(entry)
+        return found
 
     def _extract_python_calls(self, file_path: str, content: str,
                                call_graph: Dict, func_registry: Dict,
@@ -1276,6 +1535,7 @@ class CodeAnalyzer:
 
         # Get resolved dependencies for this file
         resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+        db_capable = self._db_capable(file_path, self.files.get(file_path, {}))
 
         # Walk to find all function definitions
         for node in ast.walk(tree):
@@ -1299,13 +1559,9 @@ class CodeAnalyzer:
                                         call_graph[caller_id]['calls'].append(target_id)
                 
                 # --- Cross-Boundary: DB queries (Python-specific) ---
-                for python_db_match in self.DB_QUERY_REGEX.finditer(ast.unparse(node) if hasattr(ast, "unparse") else ""):
-                    op = python_db_match.group(1) or python_db_match.group(2) or 'query'
-                    self.found_db_queries.append({
-                        'caller': caller_id,
-                        'file': file_path,
-                        'op': op.lower()
-                    })
+                body = ast.get_source_segment(content, node) or ""
+                for op in self._db_ops(body, "python", db_capable):
+                    self.found_db_queries.append({'caller': caller_id, 'file': file_path, 'op': op})
 
     def _extract_call_name(self, call_node: ast.Call) -> Optional[str]:
         """Extract the function name from an ast.Call node."""
@@ -1321,6 +1577,7 @@ class CodeAnalyzer:
                           file_dependencies: Dict):
         """Use regex to find function calls within function bodies in JS/TS."""
         resolved_deps = set(file_dependencies.get(file_path, {}).get('resolved', []))
+        db_capable = self._db_capable(file_path, self.files.get(file_path, {}))
 
         # Find function boundaries using regex
         func_pattern = re.compile(
@@ -1373,26 +1630,10 @@ class CodeAnalyzer:
                             call_graph[caller_id]['calls'].append(target_id)
             
             # --- Cross-Boundary: API calls and DB queries ---
-            # Detect fetch/axios calls
-            for api_match in self.API_CALL_REGEX.finditer(body):
-                path = api_match.group(1) or api_match.group(4)
-                method = api_match.group(2) or api_match.group(3) or 'get'
-                if path:
-                    self.found_api_calls.append({
-                        'caller': caller_id,
-                        'file': file_path,
-                        'path': path,
-                        'method': method.lower()
-                    })
-            
-            # Detect DB queries (e.g., Mongoose, Prisma)
-            for db_match in self.DB_QUERY_REGEX.finditer(body):
-                op = db_match.group(1) or db_match.group(2) or 'query'
-                self.found_db_queries.append({
-                    'caller': caller_id,
-                    'file': file_path,
-                    'op': op.lower()
-                })
+            for api in self._api_calls(body):
+                self.found_api_calls.append({'caller': caller_id, 'file': file_path, **api})
+            for op in self._db_ops(body, "javascript", db_capable):
+                self.found_db_queries.append({'caller': caller_id, 'file': file_path, 'op': op})
 
     def _extract_java_calls(self, file_path: str, content: str,
                             call_graph: Dict, func_registry: Dict,
@@ -1527,8 +1768,9 @@ class CodeAnalyzer:
 
     def _resolve_call(self, func_name: str, current_file: str,
                       func_registry: Dict, resolved_deps: Set[str]) -> List[str]:
-        """Resolve a function name to qualified IDs, preferring same-file match."""
-        candidates = func_registry.get(func_name, [])
+        """Resolve a function name to qualified IDs of the same language family,
+        preferring a same-file match, then imported files, then a few global matches."""
+        candidates = self._candidates(func_name, current_file, func_registry)
         if not candidates:
             return []
 
@@ -1544,7 +1786,7 @@ class CodeAnalyzer:
             return imported_matches
 
         # Fallback: return limited candidates to avoid explosion
-        return candidates[:3]
+        return self._prefer_primary(current_file, candidates)[:3]
 
     # === Cross-Boundary Trace Helpers ===
 
@@ -1586,6 +1828,10 @@ class CodeAnalyzer:
                 if mod in norm_file_path:
                     base_prefix = pre
                     break
+            # Router-level prefix declared in the file itself:
+            # router = APIRouter(prefix="/items"), Blueprint("x", __name__, url_prefix="/x")
+            own = self._ROUTER_PREFIX_RE.search(content)
+            router_prefix = own.group(1) if own else ""
             
             for fw in backend_fws:
                 regex = self.ROUTE_REGEXES.get(fw)
@@ -1641,19 +1887,23 @@ class CodeAnalyzer:
                         handler = match.group(3).split('::')[-1]
                     
                     if path and handler:
-                        # Combine base_prefix and path
-                        full_path = (base_prefix.rstrip('/') + '/' + path.lstrip('/')).strip('/')
+                        # Combine base_prefix, the router's own prefix and path
+                        own_path = (router_prefix.rstrip('/') + '/' + path.lstrip('/')).strip('/')
+                        full_path = (base_prefix.rstrip('/') + '/' + own_path).strip('/')
                         if not full_path: full_path = "/"
-                        
+
                         # Also keep a version without the base_prefix just in case the prefix detection was wrong
                         self.found_routes.append({
                             'file': file_path,
                             'path': full_path,
-                            'original_path': path.strip('/'),
+                            'original_path': own_path,
                             'method': method,
                             'handler': handler,
                             'middlewares': middlewares
                         })
+
+    _ROUTER_PREFIX_RE = re.compile(
+        r"\b(?:APIRouter|Blueprint|Router)\s*\([^)]*?\b(?:url_)?prefix\s*=\s*['\"]([^'\"]+)['\"]")
 
     def _find_next_python_function(self, content: str, start_pos: int) -> Optional[str]:
         """Find the next Python function definition after a position."""
@@ -1673,7 +1923,8 @@ class CodeAnalyzer:
                     "calls": [],
                     "called_by": [],
                     "language": "API",
-                    "type": "api-call"
+                    "type": "api-call",
+                    "category": path_classifier.classify_path(api.get('file', '')),
                 }
             
             # Connect caller to api-call
@@ -1691,7 +1942,7 @@ class CodeAnalyzer:
                 # Link middlewares in sequence
                 for mw in matched_route.get('middlewares', []):
                     mw_name = mw.split('.')[-1]
-                    mw_candidates = func_registry.get(mw_name, [])
+                    mw_candidates = self._candidates(mw_name, matched_route['file'], func_registry)
                     # Prefer middleware in the same file as the route
                     mw_id = next((c for c in mw_candidates if c.startswith(f"{matched_route['file']}::")), None)
                     if not mw_id and mw_candidates: mw_id = mw_candidates[0]
@@ -1702,17 +1953,14 @@ class CodeAnalyzer:
                         call_graph[mw_id]['type'] = 'middleware'
                         prev_id = mw_id
                 
-                # Final Handler
+                # Final Handler: `handler`, `Class.method` or `module.handler`, defined in the route file
                 handler_name = matched_route['handler']
-                # If handler is Class.method, try matching against just 'method' as well
-                if '.' in handler_name:
-                    method_only = handler_name.split('.')[-1]
-                    # Check if qualified ID exists for Class.method
-                    route_handler_id = f"{matched_route['file']}::{handler_name}"
-                    if route_handler_id not in call_graph:
-                        route_handler_id = f"{matched_route['file']}::{method_only}"
-                else:
-                    route_handler_id = f"{matched_route['file']}::{handler_name}"
+                route_handler_id = f"{matched_route['file']}::{handler_name}"
+                if route_handler_id not in call_graph:
+                    in_file = [c for c in self._candidates(handler_name.split('.')[-1], matched_route['file'],
+                                                           func_registry)
+                               if c.startswith(f"{matched_route['file']}::")]
+                    route_handler_id = in_file[0] if in_file else None
 
                 if route_handler_id in call_graph:
                     call_graph[route_handler_id]['type'] = 'route'
@@ -1728,7 +1976,8 @@ class CodeAnalyzer:
                             "calls": [],
                             "called_by": [],
                             "language": "Backend",
-                            "type": "route"
+                            "type": "route",
+                            "category": path_classifier.classify_path(matched_route['file']),
                         }
                     if virtual_route_id not in call_graph[prev_id]['calls']:
                         call_graph[prev_id]['calls'].append(virtual_route_id)
@@ -1743,7 +1992,8 @@ class CodeAnalyzer:
                     "calls": [],
                     "called_by": [],
                     "language": "SQL",
-                    "type": "db-query"
+                    "type": "db-query",
+                    "category": path_classifier.PRIMARY,
                 }
             
             caller_id = db['caller']
@@ -1753,39 +2003,52 @@ class CodeAnalyzer:
                 if call_graph[caller_id]['type'] == 'function':
                     call_graph[caller_id]['type'] = 'service'
 
-    def _match_route(self, api_path: str, api_method: str) -> Optional[Dict]:
-        """Match an API path to a backend route definition with improved fuzzy matching."""
-        # Clean the api_path
-        api_path = re.sub(r'^\$\{[^}]+\}/?', '', api_path)
-        api_path = re.sub(r'^https?://[^/]+/?', '', api_path)
-        api_path = api_path.strip('/').split('?')[0]
-        if not api_path: api_path = "/"
+    @staticmethod
+    def _path_segments(path: str) -> List[str]:
+        """URL path -> lower-case segments, with parameters (`{id}`, `:id`, `<int:id>`, `${id}`)
+        as '*'. Leading parameters (a `${API_URL}` base) are dropped."""
+        path = re.sub(r'^https?://[^/]+', '', path or '')
+        path = path.split('?')[0].split('#')[0]
+        segs = []
+        for seg in path.strip('/').split('/'):
+            if not seg:
+                continue
+            if seg.startswith(('{', ':', '<', '$')) or '${' in seg:
+                segs.append('*')
+            else:
+                segs.append(seg.lower())
+        while segs and segs[0] == '*':
+            segs.pop(0)
+        return segs
 
+    def _match_route(self, api_path: str, api_method: str) -> Optional[Dict]:
+        """Match an API path to a backend route definition. The route path must equal the call's
+        path or a suffix of it (the call may carry a base URL / prefix the route does not show);
+        parameters match any segment. Exact and more literal matches win."""
+        api = self._path_segments(api_path)
+        best, best_score = None, None
         for route in self.found_routes:
             if route['method'].lower() != api_method.lower() and route['method'].lower() != 'any':
                 continue
-            
-            paths_to_try = [route['path'].strip('/'), route.get('original_path', '').strip('/')]
-            
-            for rp in paths_to_try:
-                if not rp: rp = "/"
-                
-                # 1. Exact match
-                if api_path == rp:
-                    return route
-                
-                # 2. Fuzzy prefix match
-                if api_path.endswith('/' + rp) or (rp == "/" and api_path in ["api", ""]):
-                    return route
-                
-                # 3. Dynamic parameter matching
-                pattern = re.sub(r'[:{][\w-]+}', r'[^/]+', rp)
-                pattern = re.sub(r':[\w-]+', r'[^/]+', pattern)
-                
-                try:
-                    if re.fullmatch(pattern, api_path) or api_path.endswith('/' + pattern):
-                        return route
-                except:
+            for rp in (route['path'], route.get('original_path', '')):
+                segs = self._path_segments(rp)
+                if not segs:
+                    ok = not api or api == ['api']
+                    score = (len(api) == 0, 0, 0)
+                elif len(segs) > len(api):
                     continue
-
-        return None
+                else:
+                    tail = api[len(api) - len(segs):]
+                    if any(r != a and r != '*' and a != '*' for r, a in zip(segs, tail)):
+                        continue
+                    ok = True
+                    literal = sum(1 for r, a in zip(segs, tail) if r == a and r != '*')
+                    if not literal and len(segs) != len(api):
+                        continue  # "/{id}" alone says nothing about "/api/v1/users/5"
+                    # A parameter in the call matches a parameter in the route better than a
+                    # literal: "users/{user_id}" is not "users/me"
+                    exact = sum(1 for r, a in zip(segs, tail) if r == a)
+                    score = (len(segs) == len(api), len(segs), exact)
+                if ok and (best_score is None or score > best_score):
+                    best, best_score = route, score
+        return best

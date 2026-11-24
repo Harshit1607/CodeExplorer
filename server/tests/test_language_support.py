@@ -97,9 +97,9 @@ def test_python(python_project):
     assert deps["src/demo/cli.py"]["resolved"] == ["src/demo/core.py"]            # src-layout absolute
     assert "fastapi" in deps["src/demo/api.py"]["external"]
 
-    assert "src/demo/utils.py::helper" in edges(r, "src/demo/core.py::run")
-    assert "src/demo/core.py::step" in edges(r, "src/demo/core.py::run")          # self.step()
-    assert "src/demo/core.py::run" in edges(r, "src/demo/cli.py::main")           # imported member call
+    assert "src/demo/utils.py::helper" in edges(r, "src/demo/core.py::Engine.run")
+    assert "src/demo/core.py::Engine.step" in edges(r, "src/demo/core.py::Engine.run")  # self.step()
+    assert "src/demo/core.py::Engine.run" in edges(r, "src/demo/cli.py::main")    # imported member call
 
     py = r["dependencies"]["python"]
     assert py["pyproject.toml"] == ["fastapi", "httpx", "SQLAlchemy"]
@@ -167,7 +167,7 @@ def test_typescript(ts_project):
 
     assert "src/App.tsx::Header" in edges(r, "src/App.tsx::App")                   # JSX <Header />
     assert "src/lib/format.ts::format" in edges(r, "src/App.tsx::App")
-    assert "src/lib/format.ts::format" in edges(r, "src/lib/format.ts::fmt")
+    assert "src/lib/format.ts::format" in edges(r, "src/lib/format.ts::Formatter.fmt")
 
     assert {"React", "Vite"} <= set(r["frameworks"]["frontend"])
     assert r["entry_points"][0] == "src/main.tsx"                                  # createRoot()
@@ -227,8 +227,10 @@ def test_java(java_project):
     assert "src/main/java/com/acme/web/Owner.java" in deps["resolved"]             # same package, no import
     assert "java.util.List" in deps["external"]
 
-    assert "src/main/java/com/acme/repo/OwnerRepository.java::findAll" in edges(r, f"{ctl}::list")
-    assert "src/main/java/com/acme/web/Owner.java::Owner" in edges(r, f"{ctl}::make")  # new Owner()
+    assert "src/main/java/com/acme/repo/OwnerRepository.java::OwnerRepository.findAll" \
+        in edges(r, f"{ctl}::OwnerController.list")
+    assert "src/main/java/com/acme/web/Owner.java::Owner.Owner" \
+        in edges(r, f"{ctl}::OwnerController.make")                                # new Owner()
 
     assert "org.springframework.boot:spring-boot-starter-web" in r["dependencies"]["java"]["pom.xml"]
     assert "Spring Boot" in r["frameworks"]["backend"] and "PostgreSQL" in r["databases"]
@@ -309,9 +311,9 @@ def test_rust(rust_project):
     }
     assert any(e.startswith("axum") for e in deps["crates/cli/src/routes.rs"]["external"])
 
-    assert "crates/core/src/config.rs::new" in edges(r, "crates/cli/src/main.rs::main")   # Config::new()
+    assert "crates/core/src/config.rs::Config.new" in edges(r, "crates/cli/src/main.rs::main")  # Config::new()
     assert "crates/cli/src/routes.rs::serve" in edges(r, "crates/cli/src/main.rs::main")  # routes::serve()
-    assert "crates/core/src/config.rs::load" in edges(r, "crates/core/src/config.rs::new")
+    assert "crates/core/src/config.rs::load" in edges(r, "crates/core/src/config.rs::Config.new")
 
     rust = r["dependencies"]["rust"]
     assert rust["crates/core/Cargo.toml"] == ["serde", "sqlx"]
@@ -374,7 +376,7 @@ def test_cpp(cpp_project):
     assert deps["app/main.cpp"]["external"] == ["vector"]
 
     assert "src/math.cpp::square" in edges(r, "app/main.cpp::main")                # demo::square()
-    assert "src/math.cpp::add" in edges(r, "src/math.cpp::square")                 # c.add()
+    assert "src/math.cpp::Calc.add" in edges(r, "src/math.cpp::square")            # c.add()
     assert r["entry_points"] == ["app/main.cpp"]
 
     cpp = r["dependencies"]["cpp"]

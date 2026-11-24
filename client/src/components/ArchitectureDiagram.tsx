@@ -98,15 +98,23 @@ const LAYER_COLORS: { [key: string]: { bg: string; border: string; text: string 
   },
 };
 
+// Component labels are directory paths; keep the meaningful tail so boxes don't overlap
+function shortLabel(label: string): string {
+  if (label.length <= 22) return label;
+  const parts = label.split('/');
+  const tail = parts.slice(-2).join('/');
+  return tail.length <= 22 ? `…/${tail}` : `…/${parts[parts.length - 1]}`;
+}
+
 // Custom node component for architectural components
 function ComponentNode({ data }: { data: any }) {
   const colors = LAYER_COLORS[data.layer] || LAYER_COLORS.other;
 
   return (
-    <div className={`px-4 py-3 rounded-lg border-2 shadow-md min-w-[160px] ${colors.bg} ${colors.border}`}>
+    <div className={`px-4 py-3 rounded-lg border-2 shadow-md min-w-[160px] max-w-[200px] ${colors.bg} ${colors.border}`} title={data.label}>
       <Handle type="target" position={Position.Top} className="!bg-slate-400" />
-      <div className={`text-sm font-semibold ${colors.text}`}>
-        {data.label}
+      <div className={`text-sm font-semibold truncate ${colors.text}`}>
+        {shortLabel(data.label)}
       </div>
       {data.frameworks?.length > 0 && (
         <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">

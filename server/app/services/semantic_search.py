@@ -2,6 +2,8 @@ import re
 from typing import List, Dict, Any, Set
 from collections import defaultdict
 
+from app.services.path_classifier import is_secondary
+
 # Comprehensive concept mappings - bidirectional relationships
 CONCEPTS = {
     # Authentication & Security
@@ -325,7 +327,6 @@ def _key(item: Dict[str, Any]):
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][\w$.]*$")
-_SECONDARY_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|__mocks__|spec|specs|examples?|samples?|demos?|docs|fixtures?|benchmarks?)(/|$)|(^|/)test_|_test\.|\.test\.|\.spec\.")
 _SECONDARY_QUERY_RE = re.compile(r"\b(tests?|spec|specs|mock|fixtures?|examples?|samples?|demo)\b", re.I)
 
 
@@ -384,7 +385,7 @@ def hybrid_search(query: str, files: Dict[str, Dict], vector_index=None,
     if penalize_secondary:
         # Tests / examples / docs are useful, but rarely what an explorer is looking for first.
         for entry in fused.values():
-            if _SECONDARY_PATH_RE.search(entry["file_path"].lower()):
+            if is_secondary(entry["file_path"]):
                 entry["_rrf"] *= 0.75
 
     results = sorted(fused.values(), key=lambda x: (x["_rrf"], x.get("similarity") or 0), reverse=True)[:limit]
