@@ -68,7 +68,8 @@ CodeExplorer solves this by:
 - EventSource API (for SSE)
 
 **Storage**
-- In-memory sessions (TTL-evicted). Nothing is persisted.
+- In-memory sessions (TTL-evicted)
+- SQLite analysis cache on disk: finished results and embeddings keyed by `owner/repo@commit`, so re-analyzing an unchanged repo is instant and a new commit only embeds what changed
 
 ---
 

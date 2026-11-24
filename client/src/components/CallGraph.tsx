@@ -1,18 +1,47 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import axios from 'axios';
 import * as d3 from 'd3';
+import VirtualList from './VirtualList';
 
-interface CallGraphNode {
+type NodeType = 'function' | 'api-call' | 'middleware' | 'route' | 'service' | 'db-query';
+
+/** One function as the server lists it (no edge lists). */
+export interface CallGraphBrief {
+  id: string;
   name: string;
   file: string;
+  type: NodeType;
+  language: string;
+  calls_count: number;
+  called_by_count: number;
+  is_test: boolean;
+}
+
+/** A function in a fetched neighbourhood: edges limited to the other returned functions. */
+interface SubgraphNode extends CallGraphBrief {
   calls: string[];
   called_by: string[];
-  language: string;
-  type?: 'function' | 'api-call' | 'middleware' | 'route' | 'service' | 'db-query';
+}
+
+interface NodeDetail extends CallGraphBrief {
+  calls: CallGraphBrief[];
+  called_by: CallGraphBrief[];
+}
+
+/** What the `call_graph` stream event carries; the graph itself is queried on demand. */
+export interface CallGraphSummary {
+  available: boolean;
+  total_functions: number;
+  connected_functions: number;
+  total_calls: number;
+  test_functions: number;
+  most_called: CallGraphBrief | null;
 }
 
 interface CallGraphProps {
-  callGraph: { [key: string]: CallGraphNode };
-  files: { [key: string]: any };
+  sessionId: string | null;
+  summary: CallGraphSummary | null;
+  isStreaming: boolean;
 }
 
 interface GraphNode {
@@ -28,7 +57,7 @@ interface GraphNode {
   callsCount: number;
   calledByCount: number;
   language: string;
-  type: 'function' | 'api-call' | 'middleware' | 'route' | 'service' | 'db-query';
+  type: NodeType;
   x?: number;
   y?: number;
   fx?: number | null;
@@ -41,49 +70,145 @@ interface GraphLink {
   type: 'calls' | 'http' | 'db';
 }
 
-export default function CallGraph({ callGraph }: CallGraphProps) {
+type ListRow = { kind: 'file'; file: string } | { kind: 'fn'; fn: CallGraphBrief };
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const PAGE_SIZE = 200;
+const GRAPH_MAX_NODES = 150;
+const FILE_ROW_HEIGHT = 26;
+const FN_ROW_HEIGHT = 54;
+
+function errorMessage(err: any): string {
+  if (err?.response?.status === 404) {
+    return 'This analysis session has expired. Run the analysis again (an unchanged commit loads from cache in seconds).';
+  }
+  return err?.response?.data?.detail || err?.message || 'Could not load the call graph.';
+}
+
+export default function CallGraph({ sessionId, summary, isStreaming }: CallGraphProps) {
   const [selectedFunction, setSelectedFunction] = useState<string | null>(null);
   const [expandedFunctions, setExpandedFunctions] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [displayMode, setDisplayMode] = useState<'graph' | 'list'>('graph');
   const graphMode: string = 'selected';
   const [graphDepth, setGraphDepth] = useState(2);
   const [groupByFile, setGroupByFile] = useState(true);
   const [fullStackMode, setFullStackMode] = useState(true);
+  const [includeTests, setIncludeTests] = useState(false);
+  const [sortBy, setSortBy] = useState<'file' | 'called'>('file');
   const svgRef = useRef<SVGSVGElement>(null);
 
-  // Get list of all functions
-  const functionList = useMemo(() => {
-    return Object.keys(callGraph || {}).sort((a, b) => {
-      const fileA = callGraph[a]?.file || '';
-      const fileB = callGraph[b]?.file || '';
-      if (fileA !== fileB) return fileA.localeCompare(fileB);
-      return a.localeCompare(b);
-    });
-  }, [callGraph]);
+  // ---- Function list: server-side search, paged, rendered virtualized
+  const [listItems, setListItems] = useState<CallGraphBrief[]>([]);
+  const [listTotal, setListTotal] = useState(0);
+  const [listLoading, setListLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const listRequest = useRef(0);
+  const pageInFlight = useRef(false); // scroll events fire faster than state updates
+  const ready = !!sessionId && !!summary?.available;
 
-  // Group functions by file
-  const functionsByFile = useMemo(() => {
-    const grouped: { [file: string]: string[] } = {};
-    functionList.forEach(funcId => {
-      const file = callGraph[funcId]?.file || '(unknown)';
-      if (!grouped[file]) grouped[file] = [];
-      grouped[file].push(funcId);
-    });
-    return grouped;
-  }, [functionList, callGraph]);
+  // Everything the client has seen, so names stay available for pinned chips and headers.
+  const known = useRef<Map<string, CallGraphBrief>>(new Map());
+  const remember = (items: CallGraphBrief[]) => items.forEach(f => known.current.set(f.id, f));
 
-  // Filter functions based on search
-  const filteredFunctions = useMemo(() => {
-    if (!searchQuery) return functionList;
-    const query = searchQuery.toLowerCase();
-    return functionList.filter(f => {
-      const node = callGraph[f];
-      return f.toLowerCase().includes(query) ||
-             node?.name.toLowerCase().includes(query) ||
-             node?.file.toLowerCase().includes(query);
-    });
-  }, [functionList, searchQuery, callGraph]);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 200);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const fetchPage = useCallback(async (offset: number) => {
+    if (!sessionId) return;
+    const request = offset === 0 ? ++listRequest.current : listRequest.current;
+    pageInFlight.current = true;
+    setListLoading(true);
+    try {
+      const { data } = await axios.get(`${API_BASE_URL}/api/callgraph/${sessionId}/functions`, {
+        params: { q: debouncedQuery, include_tests: includeTests, sort: sortBy, offset, limit: PAGE_SIZE },
+      });
+      if (request !== listRequest.current) return; // a newer search replaced this one
+      remember(data.items);
+      setListItems(prev => (offset === 0 ? data.items : [...prev, ...data.items]));
+      setListTotal(data.total);
+      setError(null);
+    } catch (err) {
+      if (request === listRequest.current) setError(errorMessage(err));
+    } finally {
+      if (request === listRequest.current) {
+        pageInFlight.current = false;
+        setListLoading(false);
+      }
+    }
+  }, [sessionId, debouncedQuery, includeTests, sortBy]);
+
+  useEffect(() => {
+    if (ready) fetchPage(0);
+  }, [ready, fetchPage]);
+
+  const loadMore = useCallback(() => {
+    if (!pageInFlight.current && listItems.length < listTotal) fetchPage(listItems.length);
+  }, [listItems.length, listTotal, fetchPage]);
+
+  // Rows for the virtual list: file headers interleaved when grouping (file order only).
+  const grouped = groupByFile && sortBy === 'file';
+  const rows = useMemo<ListRow[]>(() => {
+    if (!grouped) return listItems.map(fn => ({ kind: 'fn', fn }));
+    const out: ListRow[] = [];
+    let file: string | null = null;
+    for (const fn of listItems) {
+      if (fn.file !== file) {
+        file = fn.file;
+        out.push({ kind: 'file', file });
+      }
+      out.push({ kind: 'fn', fn });
+    }
+    return out;
+  }, [listItems, grouped]);
+
+  // ---- Graph: the neighbourhood of the pinned functions, fetched on demand
+  const [subgraph, setSubgraph] = useState<Record<string, SubgraphNode>>({});
+  const [truncated, setTruncated] = useState(false);
+  const pinnedKey = useMemo(() => Array.from(expandedFunctions).sort().join('\n'), [expandedFunctions]);
+
+  useEffect(() => {
+    if (!sessionId || !pinnedKey) {
+      setSubgraph({});
+      setTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    const params = new URLSearchParams();
+    pinnedKey.split('\n').forEach(id => params.append('ids', id));
+    params.set('depth', String(graphDepth));
+    params.set('include_tests', String(includeTests));
+    params.set('max_nodes', String(GRAPH_MAX_NODES));
+    axios.get(`${API_BASE_URL}/api/callgraph/${sessionId}/neighbourhood`, { params })
+      .then(({ data }) => {
+        if (cancelled) return;
+        remember(Object.values(data.nodes) as CallGraphBrief[]);
+        setSubgraph(data.nodes);
+        setTruncated(!!data.truncated);
+      })
+      .catch(err => { if (!cancelled) setError(errorMessage(err)); });
+    return () => { cancelled = true; };
+  }, [sessionId, pinnedKey, graphDepth, includeTests]);
+
+  // ---- List view: one function with all its callers and callees
+  const [nodeDetail, setNodeDetail] = useState<NodeDetail | null>(null);
+  useEffect(() => {
+    if (!sessionId || !selectedFunction || displayMode !== 'list') return;
+    let cancelled = false;
+    axios.get(`${API_BASE_URL}/api/callgraph/${sessionId}/node`, {
+      params: { id: selectedFunction, include_tests: includeTests },
+    })
+      .then(({ data }) => {
+        if (cancelled) return;
+        remember([data, ...data.calls, ...data.called_by]);
+        setNodeDetail(data);
+      })
+      .catch(err => { if (!cancelled) setError(errorMessage(err)); });
+    return () => { cancelled = true; };
+  }, [sessionId, selectedFunction, displayMode, includeTests]);
 
   // Handle function selection from sidebar
   const handleFunctionSelect = useCallback((funcId: string) => {
@@ -131,10 +256,12 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   }, [selectedFunction]);
 
   // Get function info for selected function
-  const selectedInfo = useMemo(() => {
+  const selectedInfo = useMemo<CallGraphBrief | null>(() => {
     if (!selectedFunction) return null;
-    return callGraph[selectedFunction] || null;
-  }, [selectedFunction, callGraph]);
+    if (nodeDetail?.id === selectedFunction) return nodeDetail;
+    return subgraph[selectedFunction] || known.current.get(selectedFunction) || null;
+  }, [selectedFunction, nodeDetail, subgraph]);
+  const selectedDetail = nodeDetail?.id === selectedFunction ? nodeDetail : null;
 
   // Helper functions
   const getFileName = (path: string) => path.split('/').pop() || path;
@@ -172,37 +299,101 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     return '#64748b'; // gray for other
   }, []);
 
-  // Calculate statistics
-  const stats = useMemo(() => {
-    const funcs = Object.values(callGraph || {});
-    const totalCalls = funcs.reduce((sum, f) => sum + f.calls.length, 0);
-    const connectedFuncs = funcs.filter(f => f.calls.length > 0 || f.called_by.length > 0).length;
+  // Statistics come with the stream; they cover the whole graph.
+  const stats = {
+    totalFunctions: summary?.total_functions ?? 0,
+    connectedFunctions: summary?.connected_functions ?? 0,
+    totalCalls: summary?.total_calls ?? 0,
+    mostCalledName: summary?.most_called?.name || '-',
+    mostCalledCount: summary?.most_called?.called_by_count ?? 0,
+  };
 
-    // Find most called function
-    let mostCalled = { id: '', count: 0 };
-    funcs.forEach(f => {
-      if (f.called_by.length > mostCalled.count) {
-        const id = Object.entries(callGraph).find(([_, v]) => v === f)?.[0] || '';
-        mostCalled = { id, count: f.called_by.length };
-      }
-    });
+  const renderFunctionButton = (info: CallGraphBrief, subtitle: string) => {
+    const isSelected = info.id === selectedFunction;
+    return (
+      <button
+        onClick={() => handleFunctionSelect(info.id)}
+        className={`w-full h-[50px] text-left p-2 rounded transition-all ${
+          isSelected
+            ? 'bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700'
+            : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-transparent'
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm">⚡</span>
+          <span className="text-xs font-medium text-slate-900 dark:text-white truncate flex-1">
+            {info.name}
+          </span>
+          {info.is_test && (
+            <span className="text-[9px] px-1 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded">test</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5 ml-6">
+          <span className="text-[10px] text-slate-500 truncate flex-1">
+            {subtitle}
+          </span>
+          <div className="flex gap-1">
+            {info.calls_count > 0 && (
+              <span className="text-[9px] px-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
+                ↗{info.calls_count}
+              </span>
+            )}
+            {info.called_by_count > 0 && (
+              <span className="text-[9px] px-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
+                ↙{info.called_by_count}
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+    );
+  };
 
-    return {
-      totalFunctions: funcs.length,
-      connectedFunctions: connectedFuncs,
-      totalCalls,
-      mostCalledName: mostCalled.id ? getFuncName(mostCalled.id) : '-',
-      mostCalledCount: mostCalled.count,
-    };
-  }, [callGraph]);
+  // "12 of 2,572" when hidden tests (or the server's cap) leave some out of the list.
+  const edgeCount = (shown: CallGraphBrief[] | undefined, total: number) =>
+    shown && shown.length !== total
+      ? `${shown.length.toLocaleString()} of ${total.toLocaleString()}${includeTests ? '' : ', tests hidden'}`
+      : total.toLocaleString();
+
+  const renderEdgeList = (edges: CallGraphBrief[] | undefined, emptyText: string) => {
+    if (!edges) return <p className="text-sm text-slate-500">Loading...</p>;
+    if (edges.length === 0) return <p className="text-sm text-slate-500 italic">{emptyText}</p>;
+    return (
+      <VirtualList
+        items={edges}
+        maxHeight={350}
+        rowKey={(f) => f.id}
+        rowHeight={() => FN_ROW_HEIGHT}
+        renderRow={(f) => (
+          <button
+            onClick={() => handleFunctionSelect(f.id)}
+            className="w-full h-[50px] flex items-center gap-2 p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-left"
+          >
+            <span>{getFileIcon(f.file)}</span>
+            <div className="flex-1 min-w-0">
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-300 block truncate">
+                {f.name}
+              </span>
+              <span className="text-[10px] text-slate-500 block truncate">
+                {f.file}
+              </span>
+            </div>
+          </button>
+        )}
+      />
+    );
+  };
 
   // Build and render D3 graph
   useEffect(() => {
     if (!svgRef.current || displayMode !== 'graph') return;
-    if (!callGraph || Object.keys(callGraph).length === 0) return;
 
     // Clear previous content
     d3.select(svgRef.current).selectAll('*').remove();
+
+    // Only the fetched neighbourhood of the pinned functions is drawn.
+    const callGraph = subgraph;
+    if (Object.keys(callGraph).length === 0) return;
 
     let simulation: any;
 
@@ -345,8 +536,6 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
       const info = callGraph[funcId];
       if (!info) return null;
 
-      const calls = info.calls || [];
-      const calledBy = info.called_by || [];
       const selectedInfoLocal = selectedFunction ? callGraph[selectedFunction] : null;
 
       const isCallee = selectedInfoLocal ? (selectedInfoLocal.calls || []).includes(funcId) : false;
@@ -364,8 +553,8 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         isCaller,
         isCallee,
         isConnected,
-        callsCount: calls.length,
-        calledByCount: calledBy.length,
+        callsCount: info.calls_count,
+        calledByCount: info.called_by_count,
         language: info.language || 'Unknown',
         type: (info.type as any) || 'function',
       };
@@ -617,18 +806,22 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     };
     // handleRemoveFunction is recreated every render; listing it would rebuild the graph each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [callGraph, displayMode, graphMode, selectedFunction, expandedFunctions, graphDepth, getNodeColor, handleNodeClick, fullStackMode]);
+  }, [subgraph, displayMode, graphMode, selectedFunction, expandedFunctions, graphDepth, getNodeColor, handleNodeClick, fullStackMode]);
+
 
   // Empty state
-  if (!callGraph || Object.keys(callGraph).length === 0) {
+  if (!ready) {
+    const building = !summary && isStreaming;
     return (
       <div className="text-center py-12 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="text-6xl mb-4">🔀</div>
         <p className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">
-          No call graph data available
+          {building ? 'Building the call graph...' : 'No call graph data available'}
         </p>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Analyze a repository with functions to see call relationships
+          {building
+            ? 'It appears here as soon as the static analysis finishes'
+            : 'Analyze a repository with functions to see call relationships'}
         </p>
       </div>
     );
@@ -713,18 +906,24 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         )}
       </div>
 
+      {error && (
+        <div className="px-3 py-2 text-sm rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">
+          {error}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         {/* Function Selection Panel */}
         <div className="lg:col-span-1">
           <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg border border-slate-200 dark:border-slate-600 p-3">
             <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-2">
-              Select Function ({filteredFunctions.length})
+              Select Function ({listTotal.toLocaleString()})
             </h4>
 
             <div className="relative mb-2">
               <input
                 type="text"
-                placeholder="Search functions..."
+                placeholder="Search functions or files..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full px-3 py-1.5 pl-8 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg"
@@ -740,16 +939,16 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
-                <input
-                  type="checkbox"
-                  checked={groupByFile}
-                  onChange={(e) => setGroupByFile(e.target.checked)}
-                  className="rounded"
-                />
-                Group by file
-              </label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'file' | 'called')}
+                className="px-2 py-1 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded"
+                aria-label="Sort functions"
+              >
+                <option value="file">By file</option>
+                <option value="called">Most called</option>
+              </select>
               {selectedFunction && (
                 <button
                   onClick={handleClearSelection}
@@ -759,109 +958,47 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                 </button>
               )}
             </div>
-
-            <div className="max-h-[650px] overflow-y-auto space-y-1">
-              {groupByFile ? (
-                Object.entries(functionsByFile)
-                  .filter(([file]) => filteredFunctions.some(f => callGraph[f]?.file === file))
-                  .map(([file, funcs]) => (
-                    <div key={file} className="mb-2">
-                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400 px-2 py-1 truncate">
-                        {getFileIcon(file)} {getFileName(file)}
-                      </div>
-                      {funcs
-                        .filter(f => filteredFunctions.includes(f) && callGraph[f])
-                        .map(funcId => {
-                          const info = callGraph[funcId];
-                          if (!info) return null;
-                          const isSelected = funcId === selectedFunction;
-                          const callsCount = (info.calls || []).length;
-                          const calledByCount = (info.called_by || []).length;
-                          return (
-                            <button
-                              key={funcId}
-                              onClick={() => handleFunctionSelect(funcId)}
-                              className={`w-full text-left p-2 rounded transition-all ${
-                                isSelected
-                                  ? 'bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700'
-                                  : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-transparent'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm">⚡</span>
-                                <span className="text-xs font-medium text-slate-900 dark:text-white truncate flex-1">
-                                  {info.name}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 mt-0.5 ml-6">
-                                <span className="text-[10px] text-slate-500 truncate flex-1">
-                                  {getFilePath(info.file || '') || '/'}
-                                </span>
-                                <div className="flex gap-1">
-                                  {callsCount > 0 && (
-                                    <span className="text-[9px] px-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
-                                      ↗{callsCount}
-                                    </span>
-                                  )}
-                                  {calledByCount > 0 && (
-                                    <span className="text-[9px] px-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
-                                      ↙{calledByCount}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                    </div>
-                  ))
-              ) : (
-                filteredFunctions
-                  .filter(funcId => callGraph[funcId])
-                  .map(funcId => {
-                    const info = callGraph[funcId];
-                    if (!info) return null;
-                    const isSelected = funcId === selectedFunction;
-                    const callsCount = (info.calls || []).length;
-                    const calledByCount = (info.called_by || []).length;
-                    return (
-                      <button
-                        key={funcId}
-                        onClick={() => handleFunctionSelect(funcId)}
-                        className={`w-full text-left p-2 rounded transition-all ${
-                          isSelected
-                            ? 'bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700'
-                            : 'bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-transparent'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm">⚡</span>
-                          <span className="text-xs font-medium text-slate-900 dark:text-white truncate flex-1">
-                            {info.name}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5 ml-6">
-                          <span className="text-[10px] text-slate-500 truncate flex-1">
-                            {getFileName(info.file || '')}
-                          </span>
-                          <div className="flex gap-1">
-                            {callsCount > 0 && (
-                              <span className="text-[9px] px-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
-                                ↗{callsCount}
-                              </span>
-                            )}
-                            {calledByCount > 0 && (
-                              <span className="text-[9px] px-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
-                                ↙{calledByCount}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
+              {sortBy === 'file' && (
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={groupByFile}
+                    onChange={(e) => setGroupByFile(e.target.checked)}
+                    className="rounded"
+                  />
+                  Group by file
+                </label>
               )}
+              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400" title="Test files are hidden from the list and the graph unless this is on">
+                <input
+                  type="checkbox"
+                  checked={includeTests}
+                  onChange={(e) => setIncludeTests(e.target.checked)}
+                  className="rounded"
+                />
+                Show tests{summary?.test_functions ? ` (${summary.test_functions.toLocaleString()})` : ''}
+              </label>
             </div>
+
+            <VirtualList
+              items={rows}
+              maxHeight={650}
+              rowKey={(row) => (row.kind === 'file' ? `file:${row.file}` : row.fn.id)}
+              rowHeight={(row) => (row.kind === 'file' ? FILE_ROW_HEIGHT : FN_ROW_HEIGHT)}
+              onEndReached={loadMore}
+              renderRow={(row) => row.kind === 'file' ? (
+                <div className="text-xs font-medium text-slate-500 dark:text-slate-400 px-2 py-1 truncate" title={row.file}>
+                  {getFileIcon(row.file)} {getFileName(row.file)}
+                </div>
+              ) : renderFunctionButton(row.fn, grouped ? (getFilePath(row.fn.file) || '/') : getFileName(row.fn.file))}
+            />
+            {listLoading && (
+              <p className="text-[11px] text-slate-500 mt-2">Loading...</p>
+            )}
+            {!listLoading && listItems.length === 0 && (
+              <p className="text-xs text-slate-500 italic mt-2">No matching functions</p>
+            )}
           </div>
         </div>
 
@@ -910,7 +1047,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                             : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
                         }`}>
                           <span className="cursor-pointer" onClick={() => setSelectedFunction(funcId)}>
-                            {getFuncName(funcId)}
+                            {known.current.get(funcId)?.name || getFuncName(funcId)}
                           </span>
                           <button 
                             onClick={(e) => {
@@ -926,6 +1063,11 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     </div>
                   )}
                 </div>
+                {truncated && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300 mb-2">
+                    Showing the nearest {GRAPH_MAX_NODES} functions. Lower the depth or pin fewer functions to see the rest.
+                  </p>
+                )}
                 <svg ref={svgRef} className="w-full h-[700px] bg-slate-50 dark:bg-slate-900 rounded-lg" />
               </div>
             ) : (
@@ -936,7 +1078,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                     Select a function to view its call graph
                   </p>
                   <p className="text-sm text-slate-500 mt-2">
-                    Or switch to "All Functions" mode to see the complete graph
+                    Or pick one of the most called: sort the list by "Most called"
                   </p>
                 </div>
               </div>
@@ -958,10 +1100,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                   </div>
                   <div className="flex gap-2">
                     <span className="text-xs px-2 py-1 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded">
-                      ↗{selectedInfo.calls.length} calls
+                      ↗{selectedInfo.calls_count} calls
                     </span>
                     <span className="text-xs px-2 py-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 rounded">
-                      ↙{selectedInfo.called_by.length} callers
+                      ↙{selectedInfo.called_by_count} callers
                     </span>
                   </div>
                 </div>
@@ -972,67 +1114,17 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                 <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
                   <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
                     <span className="text-green-500">↗</span>
-                    Calls ({selectedInfo.calls.length})
+                    Calls ({edgeCount(selectedDetail?.calls, selectedInfo.calls_count)})
                   </h5>
-                  {selectedInfo.calls.length > 0 ? (
-                    <div className="space-y-1 max-h-[350px] overflow-y-auto">
-                      {selectedInfo.calls.map(calleeId => {
-                        const callee = callGraph[calleeId];
-                        return (
-                          <button
-                            key={calleeId}
-                            onClick={() => handleFunctionSelect(calleeId)}
-                            className="w-full flex items-center gap-2 p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-left"
-                          >
-                            <span>{getFileIcon(callee?.file || '')}</span>
-                            <div className="flex-1 min-w-0">
-                              <span className="text-sm font-medium text-slate-700 dark:text-slate-300 block truncate">
-                                {callee?.name || getFuncName(calleeId)}
-                              </span>
-                              <span className="text-[10px] text-slate-500 block truncate">
-                                {callee?.file || ''}
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-500 italic">No outgoing calls</p>
-                  )}
+                  {renderEdgeList(selectedDetail?.calls, 'No outgoing calls')}
                 </div>
 
                 <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
                   <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
                     <span className="text-sky-500">↙</span>
-                    Called By ({selectedInfo.called_by.length})
+                    Called By ({edgeCount(selectedDetail?.called_by, selectedInfo.called_by_count)})
                   </h5>
-                  {selectedInfo.called_by.length > 0 ? (
-                    <div className="space-y-1 max-h-[350px] overflow-y-auto">
-                      {selectedInfo.called_by.map(callerId => {
-                        const caller = callGraph[callerId];
-                        return (
-                          <button
-                            key={callerId}
-                            onClick={() => handleFunctionSelect(callerId)}
-                            className="w-full flex items-center gap-2 p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-left"
-                          >
-                            <span>{getFileIcon(caller?.file || '')}</span>
-                            <div className="flex-1 min-w-0">
-                              <span className="text-sm font-medium text-slate-700 dark:text-slate-300 block truncate">
-                                {caller?.name || getFuncName(callerId)}
-                              </span>
-                              <span className="text-[10px] text-slate-500 block truncate">
-                                {caller?.file || ''}
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-500 italic">Not called by any function</p>
-                  )}
+                  {renderEdgeList(selectedDetail?.called_by, 'Not called by any function')}
                 </div>
               </div>
             </div>

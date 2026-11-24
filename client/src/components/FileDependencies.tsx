@@ -1,5 +1,10 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import * as d3 from 'd3';
+import VirtualList from './VirtualList';
+import { isTestPath } from '../lib/pathFilters';
+
+const GRAPH_MAX_FILES = 300;
+const FILE_ROW_HEIGHT = 54;
 
 interface FileDependency {
   imports: string[];
@@ -44,6 +49,8 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
   const graphMode: string = 'selected';
   const [graphDepth, setGraphDepth] = useState(2);
   const [showExternal, setShowExternal] = useState(false);
+  const [includeTests, setIncludeTests] = useState(false);
+  const [graphTruncated, setGraphTruncated] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
 
   // When selected file changes from sidebar, reset expanded files
@@ -75,13 +82,13 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
   const fileList = useMemo(() => {
     return Object.keys(files || {}).map(normalizePath).sort();
   }, [files, normalizePath]);
+  const testFiles = useMemo(() => new Set(fileList.filter(isTestPath)), [fileList]);
 
-  // Filter files based on search
+  // Filter files based on search (tests are hidden unless asked for)
   const filteredFiles = useMemo(() => {
-    if (!searchQuery) return fileList;
     const query = searchQuery.toLowerCase();
-    return fileList.filter(f => f.toLowerCase().includes(query));
-  }, [fileList, searchQuery]);
+    return fileList.filter(f => (includeTests || !testFiles.has(f)) && (!query || f.toLowerCase().includes(query)));
+  }, [fileList, searchQuery, includeTests, testFiles]);
 
   // Create normalized dependency map
   const normalizedDeps = useMemo(() => {
@@ -99,13 +106,15 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
   // Calculate reverse dependencies
   const reverseDependencies = useMemo(() => {
-    const reverse: { [key: string]: string[] } = {};
+    // Sets while building: `array.includes` here was quadratic on files imported by thousands.
+    const sets: { [key: string]: Set<string> } = {};
     Object.entries(normalizedDeps).forEach(([file, deps]) => {
       deps.resolved?.forEach(dep => {
-        if (!reverse[dep]) reverse[dep] = [];
-        if (!reverse[dep].includes(file)) reverse[dep].push(file);
+        (sets[dep] ||= new Set()).add(file);
       });
     });
+    const reverse: { [key: string]: string[] } = {};
+    Object.entries(sets).forEach(([dep, users]) => { reverse[dep] = Array.from(users); });
     return reverse;
   }, [normalizedDeps]);
 
@@ -115,7 +124,9 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
     const visited = new Set<string>();
     const recursionStack = new Set<string>();
 
-    const detectCycle = (file: string, path: string[]): boolean => {
+    // One shared path stack instead of a copied array per call (quadratic on deep chains).
+    const path: string[] = [];
+    const detectCycle = (file: string): boolean => {
       if (recursionStack.has(file)) {
         path.slice(path.indexOf(file)).forEach(f => circular.add(f));
         circular.add(file);
@@ -125,17 +136,23 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
       visited.add(file);
       recursionStack.add(file);
+      path.push(file);
 
       for (const dep of normalizedDeps[file]?.resolved || []) {
-        if (detectCycle(dep, [...path, file])) return true;
+        if (detectCycle(dep)) return true;
       }
 
+      path.pop();
       recursionStack.delete(file);
       return false;
     };
 
     Object.keys(normalizedDeps).forEach(file => {
-      if (!visited.has(file)) detectCycle(file, []);
+      if (!visited.has(file)) {
+        path.length = 0;
+        recursionStack.clear();
+        detectCycle(file);
+      }
     });
 
     return circular;
@@ -191,6 +208,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
     const filesToShow = new Set<string>();
     const linksData: Array<{ source: string; target: string }> = [];
+    let truncated = false;
     const externalPackages = new Set<string>();
 
     // Track files connected to selected file (for highlighting in 'all' mode)
@@ -220,9 +238,15 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
       // Track which links we've already added to avoid duplicates
       const addedLinks = new Set<string>();
+      // Hidden tests are skipped (unless pinned); big hubs are capped to keep the graph usable.
+      const hidden = (file: string) => !includeTests && testFiles.has(file) && !expandedFiles.has(file);
 
       const collectDeps = (file: string, depth: number, direction: 'deps' | 'usedBy', isExpandedFile: boolean) => {
-        if (depth > graphDepth) return;
+        if (depth > graphDepth || hidden(file)) return;
+        if (!filesToShow.has(file) && filesToShow.size >= GRAPH_MAX_FILES) {
+          truncated = true;
+          return;
+        }
 
         // Always add the file
         filesToShow.add(file);
@@ -230,6 +254,10 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
         if (direction === 'deps') {
           const deps = normalizedDeps[file]?.resolved || [];
           deps.forEach(dep => {
+            if (hidden(dep) || (!filesToShow.has(dep) && filesToShow.size >= GRAPH_MAX_FILES)) {
+              truncated ||= !hidden(dep);
+              return;
+            }
             const linkKey = `${file}->${dep}`;
             if (!addedLinks.has(linkKey)) {
               addedLinks.add(linkKey);
@@ -249,6 +277,10 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
         } else {
           const parents = reverseDependencies[file] || [];
           parents.forEach(parent => {
+            if (hidden(parent) || (!filesToShow.has(parent) && filesToShow.size >= GRAPH_MAX_FILES)) {
+              truncated ||= !hidden(parent);
+              return;
+            }
             const linkKey = `${parent}->${file}`;
             if (!addedLinks.has(linkKey)) {
               addedLinks.add(linkKey);
@@ -269,6 +301,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
       });
     }
 
+    setGraphTruncated(truncated);
     if (filesToShow.size === 0 && externalPackages.size === 0) return;
 
     // Create nodes array
@@ -517,7 +550,7 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
     return () => {
       simulation.stop();
     };
-  }, [displayMode, graphMode, selectedFile, expandedFiles, graphDepth, showExternal, normalizedDeps, reverseDependencies, circularFiles, handleNodeClick]);
+  }, [displayMode, graphMode, selectedFile, expandedFiles, graphDepth, showExternal, normalizedDeps, reverseDependencies, circularFiles, handleNodeClick, includeTests, testFiles]);
 
   // Statistics
   const stats = useMemo(() => ({
@@ -662,8 +695,22 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
               )}
             </div>
 
-            <div className="max-h-[500px] overflow-y-auto space-y-1">
-              {filteredFiles.map((file) => {
+            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 mb-2" title="Test files are hidden from the list and the graph unless this is on">
+              <input
+                type="checkbox"
+                checked={includeTests}
+                onChange={(e) => setIncludeTests(e.target.checked)}
+                className="rounded"
+              />
+              Show tests ({testFiles.size.toLocaleString()})
+            </label>
+
+            <VirtualList
+              items={filteredFiles}
+              maxHeight={500}
+              rowKey={(file) => file}
+              rowHeight={() => FILE_ROW_HEIGHT}
+              renderRow={(file) => {
                 const isSelected = selectedFile === file;
                 const deps = normalizedDeps[file];
                 const depCount = deps?.resolved?.length || 0;
@@ -672,9 +719,8 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
 
                 return (
                   <button
-                    key={file}
                     onClick={() => handleFileSelect(file)}
-                    className={`w-full text-left p-2 rounded transition-all ${
+                    className={`w-full h-[50px] text-left p-2 rounded transition-all ${
                       isSelected
                         ? 'bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700'
                         : hasCircular
@@ -708,8 +754,8 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
                     </div>
                   </button>
                 );
-              })}
-            </div>
+              }}
+            />
           </div>
         </div>
 
@@ -748,6 +794,11 @@ export default function FileDependencies({ files, fileDependencies }: FileDepend
                     </button>
                   )}
                 </div>
+                {graphTruncated && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300 mb-2">
+                    Showing the nearest {GRAPH_MAX_FILES} files. Lower the depth to see a smaller neighbourhood.
+                  </p>
+                )}
                 <svg ref={svgRef} className="w-full h-[550px] bg-slate-50 dark:bg-slate-900 rounded-lg" />
               </div>
             ) : (

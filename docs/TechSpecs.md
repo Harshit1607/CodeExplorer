@@ -12,6 +12,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 
 1. User submits a public GitHub repository URL
 2. Backend initiates a **Streaming Pipeline** with a unique session ID
+   - It first looks up the repository's current commit (`git ls-remote`). If that `owner/repo@sha` is in the **analysis cache**, the stored results are replayed and steps 3–10 are skipped.
 3. Repository metadata is fetched via GitHub API
 4. Backend clones the repository temporarily using a background task
 5. **Concurrent Scanner** watches the clone directory and processes files as they appear
@@ -40,9 +41,10 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - Framework and database detection
 - **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers.
 - **AI Analyzer**: Generates automated architectural summaries and insights using LLMs (Groq API).
-- **Streaming Pipeline**: Clones (with live progress), analyzes files in parallel, then runs deep analysis while building the vector index concurrently. Emits batched SSE events with monotonic progress; non-fatal problems are `warning` events, only fatal failures are `error`. Sessions are kept in a TTL-evicted store so clients can reconnect (history is replayed) and search/chat can reuse server-side data.
+- **Streaming Pipeline**: Clones (with live progress), analyzes files in parallel, then runs deep analysis while building the vector index concurrently. Emits batched SSE events with monotonic progress; non-fatal problems are `warning` events, only fatal failures are `error`. Sessions are kept in a TTL-evicted store so clients can reconnect (history is replayed; progress events are coalesced so a reconnect replays only the latest one) and search/chat/call-graph queries can reuse server-side data. The call graph is not streamed: the `call_graph` event carries a summary and the client queries the graph (see the `/api/callgraph` endpoints).
+- **Analysis Cache** (`analysis_cache.py`): SQLite on disk (`ANALYSIS_CACHE_DIR`, default `server/.cache/analysis`). Finished analyses are stored by `owner/repo@commit-sha` (replayable events plus the files, results and chunks that chat, search and the call graph need), so a repeat analysis of an unchanged commit, by anyone, needs no clone, parsing or embedding. Chunk embeddings are stored by a hash of (model, embedded text), so a new commit only embeds the chunks that changed. Both share one size budget (`ANALYSIS_CACHE_MAX_MB`, default 2048) with least-recently-used eviction. A cached analysis is only served to the same analyzer version (a hash of the server's analysis code and output-changing settings), so a deploy never serves old results. A failed AI report is not cached; it is retried on the next request. Sessions of the same commit share one in-memory copy of its data and search index. `ANALYSIS_CACHE_ENABLED=false` turns caching off.
 - **Code Chunker**: Splits source into symbol-level chunks along tree-sitter symbols (doc comments included; large classes/components split into members), with `ast`/regex fallbacks and overlapping windows for oversized segments.
-- **Vector Index**: Embeds chunks locally with fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, no API key) into an in-memory numpy matrix per session; brute-force cosine search. Searchable incrementally while it builds.
+- **Vector Index**: Embeds chunks locally with fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, no API key) into an in-memory numpy matrix per session; brute-force cosine search. Searchable incrementally while it builds. Only primary code is indexed: test, generated (`*.gen.ts`, `*_pb2.py`, `*.min.js`, `migrations/`, …) and vendored files are skipped (`path_filters.py`; all files are indexed if nothing else is left, `INDEX_SKIP_NON_PRIMARY=false` turns this off), up to `MAX_INDEX_CHUNKS` (10,000) chunks. Vectors found in the analysis cache are reused. Concurrent builds take turns per batch of 64 chunks.
 - **Semantic Search Service**: Hybrid retrieval — concept-expanded keyword matching (50+ concept categories) fused with vector similarity via weighted reciprocal rank fusion. Identifier-like queries lean on keywords, natural-language queries lean on vectors; tests/examples are mildly down-ranked unless asked for. Falls back to keyword-only when no index is available.
 - **Chat Service (RAG)**: Groq-powered chat (`GROQ_MODEL`, default `openai/gpt-oss-120b`). Each question gets a compact repo overview plus code retrieved for that question by the **RAG Retriever**:
   - explicitly named symbols (`backticks`, snake_case, camelCase, `name()`) and named files (with a symbol outline),
@@ -78,7 +80,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 ## 5. Data Handling
 
 - No user data is stored
-- Analysis data is overwritten per repository
+- Finished analyses of public repositories and their chunk embeddings are cached on disk by commit (see **Analysis Cache**)
 - Repository files are deleted after analysis
 - Theme preference is persisted in localStorage
 - Chat history is maintained during the session only
@@ -95,12 +97,16 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - `key_files`: Key files and entry points
   - `framework_detected`: Frameworks, databases, and dependencies
   - `file_dependencies`: File-level dependency graph (one event)
-  - `call_graph`: Function call graph (one event)
+  - `call_graph`: Call-graph summary only (`total_functions`, `connected_functions`, `total_calls`, `test_functions`, `most_called`); the graph itself is served by `/api/callgraph/...`
   - `architecture_ready`: ReactFlow architecture data
   - `quickstart_ready`: README, package manager, run scripts
   - `ai_report_ready`: AI-generated architecture summary
   - `search_index_progress` / `search_index_ready`: Vector index build status (runs concurrently)
-  - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done
+  - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done (includes `commit` and `cached: true` when served from the analysis cache)
+- `GET /api/callgraph/{session_id}/summary` — The call-graph summary.
+- `GET /api/callgraph/{session_id}/functions?q=&file=&include_tests=&sort=&offset=&limit=` — A page (≤ 500) of functions with call counts: substring search, one file (`file=`), or top-N (`sort=called`). Test files are excluded unless `include_tests=true`.
+- `GET /api/callgraph/{session_id}/node?id=` — One function with its callers and callees.
+- `GET /api/callgraph/{session_id}/neighbourhood?ids=&depth=&include_tests=&max_nodes=` — The given functions plus callees' callees and callers' callers up to `depth` hops, breadth first, at most `max_nodes` (≤ 400). Used to draw the graph.
 - `GET /api/analyze/{session_id}/status` — Pipeline and search-index status for a session.
 - `POST /api/search` — Hybrid semantic search. Body: `query`, `session_id` (preferred), optional `mode` (`hybrid` | `semantic` | `keyword`), `limit`, and optional `analysis_data` fallback. Returns ranked results with match type, similarity, line range, and code snippet.
 - `GET /api/search/status?session_id=` — Vector index status.
@@ -122,13 +128,13 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 3. **Chat** — Retrieval-augmented chat with per-answer source chips (GitHub deep links to exact lines), code-block rendering, index status, suggested questions, chat history, rate-limit handling, and retry functionality
 4. **Search** — Hybrid vector + keyword code search with index build status, mode toggle (hybrid/semantic/keyword), type filtering, expandable code snippets with line numbers, and GitHub deep links
 5. **Architecture** — ReactFlow-based layered architecture diagram with 8 layer types
-6. **Call Graph** — Interactive D3.js force-directed graph showing function-to-function call relationships
+6. **Call Graph** — Interactive D3.js force-directed graph showing function-to-function call relationships. The function list is searched and paged on the server and rendered virtualized; the graph shows the fetched neighbourhood of the pinned functions (≤ 150). Tests are hidden unless "Show tests" is on.
 7. **Complexity** — Recharts bar chart ranking files by complexity (updates incrementally during scan)
 8. **Overview** — Repository statistics and language breakdown
 9. **File Structure** — Interactive file tree display (available immediately after scan)
 10. **Languages** — Language distribution visualization
 11. **Dependencies** — Project dependency listing (npm, pip, cargo, go modules)
-12. **File Dependencies** — Interactive D3.js graph of file import/export relationships
+12. **File Dependencies** — Interactive D3.js graph of file import/export relationships (virtualized file list, tests hidden by default, graph capped at 300 files)
 13. **Key Files** — Highlights important files (README, LICENSE, Dockerfile, etc.)
 
 ### Real-time Progress
@@ -192,6 +198,7 @@ For these, `source_parser.py` extracts with real parsers rather than regexes:
   - Express, FastAPI, Flask, Django, Spring
   - Actix Web, Rocket, Axum
 - DB query hints
+- Minified files and files over `MAX_ANALYZE_BYTES` (1.5 MB) are counted but not parsed: no symbols, call edges or search chunks (the regex fallback takes seconds on them)
 
 ### Dependency Extraction (`project_manifests.py`)
 - **Python:** `requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.cfg`, `setup.py`
@@ -266,7 +273,7 @@ For every project root (nested roots of the same ecosystem collapse into the top
 - **Order:** application code first, then tests/examples.
 
 ### Tests
-`server/tests/test_language_support.py` runs one realistic mini-project per language through the full analyzer: symbols, import resolution, call graph, manifests, frameworks, databases, entry points, build commands, and the chunker. Run with `cd server && pip install -r requirements-dev.txt && pytest`.
+`server/tests/test_language_support.py` runs one realistic mini-project per language through the full analyzer: symbols, import resolution, call graph, manifests, frameworks, databases, entry points, build commands, and the chunker. `server/tests/test_big_repos.py` covers the call-graph queries, the analysis cache (replay by commit, embedding reuse, eviction) and the test/generated/vendored/minified filters. Run with `cd server && pip install -r requirements-dev.txt && pytest`.
 
 ---
 
@@ -302,6 +309,6 @@ Per-client sliding-window limits (in-memory, `app/core/rate_limit.py`), configur
 
 - One repository analyzed at a time
 - Public repositories only
-- No authentication or persistence across sessions
+- No authentication; sessions live in memory (only the analysis cache persists, on disk)
 - Chat context budget is ~14k characters (`CHAT_CONTEXT_CHARS`) because the Groq free tier allows ~8k tokens/minute including the answer
 - Chat subject to rate limiting (per-client limits and the shared Groq API quota)
