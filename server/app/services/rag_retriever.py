@@ -175,11 +175,10 @@ class RepoRetriever:
         if not self.call_graph or not (want_callers or want_callees):
             return []
 
-        by_id: Dict[str, CodeChunk] = {}
-        for c in chunks:
-            if c.symbol and c.kind in ("function", "method"):
-                by_id.setdefault(f"{c.file}::{c.symbol}", c)
-                by_id.setdefault(f"{c.file}::{_short(c.symbol)}", c)  # regex-parsed languages
+        funcs = [c for c in chunks if c.symbol and c.kind in ("function", "method")]
+        by_id: Dict[str, CodeChunk] = {f"{c.file}::{c.symbol}": c for c in reversed(funcs)}
+        for c in funcs:
+            by_id.setdefault(f"{c.file}::{_short(c.symbol)}", c)  # regex-parsed languages
 
         seeds = []
         for cand in cands:

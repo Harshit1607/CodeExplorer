@@ -20,7 +20,7 @@ from app.services import path_classifier, source_parser
 from app.services.ai_analyzer import AIAnalyzer
 from app.services.code_analyzer import CodeAnalyzer
 from app.services.code_chunker import CodeChunk
-from app.services.rag_retriever import RepoRetriever
+from app.services.rag_retriever import Candidate, RepoRetriever
 
 pytestmark = pytest.mark.skipif(not source_parser.available(), reason="tree-sitter not installed")
 
@@ -137,6 +137,33 @@ def test_orm_calls_are_database_queries(tmp_path):
     assert "app/crud.py::create_user" in db["db-query::INSERT"]["called_by"]
     assert "app/raw.py::count_users" in db["db-query::SELECT"]["called_by"]
     assert r["call_graph"]["app/crud.py::create_user"]["type"] == "service"
+
+
+def test_flask_session_dict_is_not_a_database_session(tmp_path):
+    r = analyze(make_project(tmp_path, {
+        "pyproject.toml": '[project]\nname = "site"\ndependencies = ["flask", "flask-sqlalchemy"]\n',
+        "site/auth.py": """
+            from flask import session
+
+            def current_user_id():
+                return session.get("user_id")
+
+            def remember(user_id):
+                session.update(user_id=user_id)
+
+            def cached(conn, pool, key):
+                return conn.get(key) or pool.get("default")
+        """,
+        "site/users.py": """
+            def load_user(session, user_id):
+                return session.get(User, user_id)
+        """,
+    }))
+    db = db_nodes(r)
+    assert list(db) == ["db-query::SELECT"]
+    assert db["db-query::SELECT"]["called_by"] == ["site/users.py::load_user"]
+    assert all(r["call_graph"][f"site/auth.py::{f}"]["type"] != "service"
+               for f in ("current_user_id", "remember", "cached"))
 
 
 def test_django_orm_and_prisma_are_database_queries(tmp_path):
@@ -396,6 +423,17 @@ def test_fullstack_architecture_layers(fullstack_project):
     assert not any(i.startswith("backend/tests/") for i in nodes)
 
 
+def test_ui_named_dirs_inside_a_backend_stay_backend(tmp_path):
+    files = {"server/package.json": json.dumps({"name": "api", "dependencies": {"express": "4"}})}
+    for sub in ("web", "client", "ui"):
+        for mod in ("routes", "handlers", "views"):
+            files[f"server/src/{sub}/{mod}.ts"] = f"export function {sub}{mod}() {{\n  return 1;\n}}\n"
+    r = analyze(make_project(tmp_path, files))
+    server = [n for n in r["architecture"]["nodes"] if n["type"] == "component" and n["id"].startswith("server/")]
+    assert any(n["id"].split("/")[-1] in ("web", "client", "ui") for n in server)
+    assert all(n["layer"] != "frontend" for n in server)
+
+
 def test_architecture_stays_readable_on_large_repos(tmp_path):
     files = {"pyproject.toml": '[project]\nname = "big"\n'}
     for pkg in range(30):
@@ -472,6 +510,31 @@ def test_retriever_call_info_uses_class_qualified_ids(tmp_path):
     assert retriever._call_info(chunk("A.run")) == "calls: A.step"
     assert retriever._call_info(chunk("A.step")) == "called by: A.run"
     assert retriever._call_info(chunk("B.run")) == ""
+
+
+def test_retriever_neighbour_prefers_real_node_over_method_short_name(tmp_path):
+    r = analyze(make_project(tmp_path, {
+        "m.py": """
+            class A:
+                def foo(self):
+                    return 1
+
+
+            def foo():
+                return 2
+
+
+            def bar():
+                return foo()
+        """,
+    }))
+    assert r["call_graph"]["m.py::bar"]["calls"] == ["m.py::foo"]
+    chunk = lambda symbol, kind: CodeChunk(id=symbol, file="m.py", language="Python", symbol=symbol, kind=kind,
+                                           start_line=1, end_line=2, code="")
+    chunks = [chunk("A.foo", "method"), chunk("foo", "function"), chunk("bar", "function")]
+    retriever = RepoRetriever(None, r["call_graph"], r["files"])
+    extra = retriever._graph_neighbours("what does bar call", [Candidate(chunks[2], 2.0, "symbol")], chunks)
+    assert [c.chunk.symbol for c in extra] == ["foo"]
 
 
 # ---------------------------------------------------------------------------

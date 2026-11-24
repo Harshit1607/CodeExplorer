@@ -236,12 +236,9 @@ class ArchitectureAnalyzer:
                 classification[comp_id] = self._SECONDARY_LAYERS[comp['category']]
                 continue
             segs = [] if comp_id == '(root)' else comp_id.lower().split('/')
-            # Which side of a full-stack repo: decided by the top-level directory names
-            side = None
-            if any(s in self.FRONTEND_ROOTS for s in segs):
-                side = 'frontend'
-            elif any(s in self.BACKEND_ROOTS for s in segs):
-                side = 'backend'
+            # Which side of a full-stack repo: decided by the outermost frontend / backend directory name
+            side = next(('frontend' if s in self.FRONTEND_ROOTS else 'backend' for s in segs
+                         if s in self.FRONTEND_ROOTS or s in self.BACKEND_ROOTS), None)
             # A component is frontend only when most of its code is in a UI language
             can_be_frontend = side != 'backend' and comp.get('main_family') in ui_families
             if side == 'frontend' and can_be_frontend:
