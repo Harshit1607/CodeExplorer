@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from app.services.code_chunker import CodeChunk
-from app.services.semantic_search import _SECONDARY_PATH_RE, _SECONDARY_QUERY_RE
+from app.services.path_classifier import is_secondary
+from app.services.semantic_search import _SECONDARY_QUERY_RE
 
 MIN_SIMILARITY = 0.45
 MAX_CHUNKS_PER_FILE = 4
@@ -156,7 +157,7 @@ class RepoRetriever:
         penalize = not _SECONDARY_QUERY_RE.search(query)
         for c, sim in self.index.search(query, k=80 if mentioned else 40, min_score=MIN_SIMILARITY):
             score = sim
-            if penalize and _SECONDARY_PATH_RE.search(c.file.lower()):
+            if penalize and is_secondary(c.file):
                 score *= 0.85
             if c.file in mentioned:
                 score *= 1.3
@@ -177,7 +178,8 @@ class RepoRetriever:
         by_id: Dict[str, CodeChunk] = {}
         for c in chunks:
             if c.symbol and c.kind in ("function", "method"):
-                by_id.setdefault(f"{c.file}::{_short(c.symbol)}", c)
+                by_id.setdefault(f"{c.file}::{c.symbol}", c)
+                by_id.setdefault(f"{c.file}::{_short(c.symbol)}", c)  # regex-parsed languages
 
         seeds = []
         for cand in cands:
@@ -191,12 +193,12 @@ class RepoRetriever:
 
         extra: List[Candidate] = []
         for seed in seeds:
-            node = self.call_graph.get(f"{seed.file}::{_short(seed.symbol)}") or {}
+            node = self._node(seed) or {}
             ids = (node.get("called_by", []) if want_callers else []) + (node.get("calls", []) if want_callees else [])
             added = 0
             for nid in ids:
                 c = by_id.get(nid)
-                if c is None or _SECONDARY_PATH_RE.search(c.file.lower()):
+                if c is None or is_secondary(c.file):
                     continue
                 extra.append(Candidate(c, 0.9, "graph"))
                 added += 1
@@ -228,8 +230,8 @@ class RepoRetriever:
             cap = MAX_CHUNKS_PER_FILE + (3 if c.file in mentioned else 0)
             if per_file.get(c.file, 0) >= cap and cand.reason == "semantic":
                 continue
-            is_secondary = bool(_SECONDARY_PATH_RE.search(c.file.lower()))
-            if is_secondary and not allow_secondary and cand.reason == "semantic" and secondary >= MAX_SECONDARY_CHUNKS:
+            secondary_file = is_secondary(c.file)
+            if secondary_file and not allow_secondary and cand.reason == "semantic" and secondary >= MAX_SECONDARY_CHUNKS:
                 continue
             if any(_overlaps(c, s.chunk) for s in selected):
                 continue
@@ -242,17 +244,25 @@ class RepoRetriever:
                 cand = Candidate(trimmed, cand.score, cand.reason)
                 cost = remaining + 200
             selected.append(cand)
-            secondary += int(is_secondary)
+            secondary += int(secondary_file)
             per_file[c.file] = per_file.get(c.file, 0) + 1
             used += cost
             if budget - used < 600:
                 break
         return selected
 
+    def _node(self, chunk: CodeChunk) -> Optional[Dict]:
+        """The call-graph node of a function chunk. Nodes are keyed `file::Class.method` (the chunk's
+        own symbol) for parsed languages and `file::name` for regex-parsed ones."""
+        if not chunk.symbol:
+            return None
+        return self.call_graph.get(f"{chunk.file}::{chunk.symbol}") \
+            or self.call_graph.get(f"{chunk.file}::{_short(chunk.symbol)}")
+
     def _call_info(self, chunk: CodeChunk) -> str:
         if chunk.kind not in ("function", "method") or not chunk.symbol:
             return ""
-        node = self.call_graph.get(f"{chunk.file}::{_short(chunk.symbol)}")
+        node = self._node(chunk)
         if not node:
             return ""
 

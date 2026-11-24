@@ -27,7 +27,6 @@ from git import Repo, RemoteProgress
 
 from app.core import config
 from app.services.ai_analyzer import AIAnalyzer
-from app.services.architecture_service import ArchitectureAnalyzer
 from app.services.code_analyzer import CodeAnalyzer
 from app.services.code_chunker import CodeChunker
 from app.services.fs_utils import remove_tree
@@ -320,13 +319,7 @@ class StreamingPipeline:
         self.emit("call_graph", stage, 74, call_graph)
 
         def _arch():
-            return ArchitectureAnalyzer({
-                "files": a.files,
-                "frameworks": frameworks,
-                "databases": databases,
-                "file_dependencies": file_deps,
-                "entry_points": entry_points,
-            }).generate()
+            return a._architecture(frameworks, databases, file_deps, entry_points)
 
         self.emit("architecture_ready", stage, 80, await self._in_thread(_arch))
 

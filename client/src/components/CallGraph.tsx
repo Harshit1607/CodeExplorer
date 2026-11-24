@@ -8,6 +8,8 @@ interface CallGraphNode {
   called_by: string[];
   language: string;
   type?: 'function' | 'api-call' | 'middleware' | 'route' | 'service' | 'db-query';
+  // primary | test | example | docs | generated (where the function lives)
+  category?: string;
 }
 
 interface CallGraphProps {
@@ -50,17 +52,35 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
   const [graphDepth, setGraphDepth] = useState(2);
   const [groupByFile, setGroupByFile] = useState(true);
   const [fullStackMode, setFullStackMode] = useState(true);
+  // Tests, examples, docs and generated code are hidden by default: they otherwise dominate
+  // the function list and the callers of the product's own functions.
+  const [hideSecondary, setHideSecondary] = useState(true);
   const svgRef = useRef<SVGSVGElement>(null);
+
+  const secondaryCount = useMemo(
+    () => Object.values(callGraph || {}).filter(n => n?.category && n.category !== 'primary').length,
+    [callGraph],
+  );
+  // Only hide when there is primary code left to show
+  const hidingSecondary = hideSecondary && secondaryCount > 0 && secondaryCount < Object.keys(callGraph || {}).length;
+  const isHidden = useCallback(
+    (funcId: string) => {
+      if (!hidingSecondary) return false;
+      const category = callGraph[funcId]?.category;
+      return !!category && category !== 'primary';
+    },
+    [callGraph, hidingSecondary],
+  );
 
   // Get list of all functions
   const functionList = useMemo(() => {
-    return Object.keys(callGraph || {}).sort((a, b) => {
+    return Object.keys(callGraph || {}).filter(id => !isHidden(id)).sort((a, b) => {
       const fileA = callGraph[a]?.file || '';
       const fileB = callGraph[b]?.file || '';
       if (fileA !== fileB) return fileA.localeCompare(fileB);
       return a.localeCompare(b);
     });
-  }, [callGraph]);
+  }, [callGraph, isHidden]);
 
   // Group functions by file
   const functionsByFile = useMemo(() => {
@@ -135,6 +155,10 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     if (!selectedFunction) return null;
     return callGraph[selectedFunction] || null;
   }, [selectedFunction, callGraph]);
+  const visibleCalls = useMemo(() => (selectedInfo?.calls || []).filter(id => !isHidden(id)), [selectedInfo, isHidden]);
+  const visibleCallers = useMemo(() => (selectedInfo?.called_by || []).filter(id => !isHidden(id)), [selectedInfo, isHidden]);
+  const hiddenNote = (all: string[], shown: string[]) =>
+    all.length > shown.length ? ` +${all.length - shown.length} in tests/examples` : '';
 
   // Helper functions
   const getFileName = (path: string) => path.split('/').pop() || path;
@@ -277,7 +301,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         if (direction === 'calls') {
           (info.calls || []).forEach(callee => {
             const calleeInfo = callGraph[callee];
-            if (!calleeInfo) return;
+            if (!calleeInfo || (isHidden(callee) && !funcsToExpand.has(callee))) return;
             
             // --- Full-Stack Filter ---
             if (!fullStackMode && calleeInfo.type && calleeInfo.type !== 'function') return;
@@ -299,7 +323,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
         } else {
           (info.called_by || []).forEach(caller => {
             const callerInfo = callGraph[caller];
-            if (!callerInfo) return;
+            if (!callerInfo || (isHidden(caller) && !funcsToExpand.has(caller))) return;
             
             // --- Full-Stack Filter ---
             if (!fullStackMode && callerInfo.type && callerInfo.type !== 'function') return;
@@ -617,7 +641,7 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
     };
     // handleRemoveFunction is recreated every render; listing it would rebuild the graph each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [callGraph, displayMode, graphMode, selectedFunction, expandedFunctions, graphDepth, getNodeColor, handleNodeClick, fullStackMode]);
+  }, [callGraph, displayMode, graphMode, selectedFunction, expandedFunctions, graphDepth, getNodeColor, handleNodeClick, fullStackMode, isHidden]);
 
   // Empty state
   if (!callGraph || Object.keys(callGraph).length === 0) {
@@ -750,6 +774,20 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                 />
                 Group by file
               </label>
+              {secondaryCount > 0 && (
+                <label
+                  className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400"
+                  title="Functions in tests, examples, docs and generated files"
+                >
+                  <input
+                    type="checkbox"
+                    checked={hideSecondary}
+                    onChange={(e) => setHideSecondary(e.target.checked)}
+                    className="rounded"
+                  />
+                  Hide tests &amp; examples
+                </label>
+              )}
               {selectedFunction && (
                 <button
                   onClick={handleClearSelection}
@@ -972,11 +1010,11 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                 <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
                   <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
                     <span className="text-green-500">↗</span>
-                    Calls ({selectedInfo.calls.length})
+                    Calls ({visibleCalls.length}{hiddenNote(selectedInfo.calls, visibleCalls)})
                   </h5>
-                  {selectedInfo.calls.length > 0 ? (
+                  {visibleCalls.length > 0 ? (
                     <div className="space-y-1 max-h-[350px] overflow-y-auto">
-                      {selectedInfo.calls.map(calleeId => {
+                      {visibleCalls.map(calleeId => {
                         const callee = callGraph[calleeId];
                         return (
                           <button
@@ -1005,11 +1043,11 @@ export default function CallGraph({ callGraph }: CallGraphProps) {
                 <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
                   <h5 className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
                     <span className="text-sky-500">↙</span>
-                    Called By ({selectedInfo.called_by.length})
+                    Called By ({visibleCallers.length}{hiddenNote(selectedInfo.called_by, visibleCallers)})
                   </h5>
-                  {selectedInfo.called_by.length > 0 ? (
+                  {visibleCallers.length > 0 ? (
                     <div className="space-y-1 max-h-[350px] overflow-y-auto">
-                      {selectedInfo.called_by.map(callerId => {
+                      {visibleCallers.map(callerId => {
                         const caller = callGraph[callerId];
                         return (
                           <button

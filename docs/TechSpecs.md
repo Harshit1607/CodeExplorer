@@ -38,7 +38,8 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - Call graph (function-to-function call relationships)
   - File-level dependency graph with circular dependency detection
   - Framework and database detection
-- **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers.
+- **Architecture Analyzer**: Generates high-level layered architecture diagrams. Each sub-project (a directory with its own manifest, e.g. `backend/` and `frontend/`) starts as one component; the largest components are split along their directories while the diagram stays at about 20 boxes, shared between sub-projects. Tests, examples and docs collapse into one component per sub-project. Layers come from directory names (`backend/`/`server/` vs `frontend/`/`client/` decide the side; a component is frontend only when most of its code is in a UI language), and each component is labelled only with frameworks of its own language.
+- **Path Classifier** (`path_classifier.py`): Classifies every path as primary, test, example, docs or generated (`*.gen.ts`, `*_pb2.py`, `*.min.js`, lockfiles, ...). Shared by framework/database detection, key files, entry points, the architecture view, the AI report inputs, the call graph, search ranking and quick start roots, so example sub-projects, test suites and generated clients never decide what the repository is.
 - **AI Analyzer**: Generates automated architectural summaries and insights using LLMs (Groq API).
 - **Streaming Pipeline**: Clones (with live progress), analyzes files in parallel, then runs deep analysis while building the vector index concurrently. Emits batched SSE events with monotonic progress; non-fatal problems are `warning` events, only fatal failures are `error`. Sessions are kept in a TTL-evicted store so clients can reconnect (history is replayed) and search/chat can reuse server-side data.
 - **Code Chunker**: Splits source into symbol-level chunks along tree-sitter symbols (doc comments included; large classes/components split into members), with `ast`/regex fallbacks and overlapping windows for oversized segments.
@@ -183,15 +184,18 @@ For these, `source_parser.py` extracts with real parsers rather than regexes:
 - Unresolved imports are listed as external. The graph also detects circular dependencies and builds a reverse dependency map.
 
 ### Call Graph Analysis
+- Node ids are `file::Class.method` (`file::function` for top-level functions, `file::outer.inner` for nested ones), so same-named methods of different classes stay separate nodes. Each node carries a `category` (primary / test / example / docs / generated); the UI hides non-primary nodes by default.
+- Calls only resolve to functions in the same language family (Python, JS/TS, JVM, Rust, C/C++, ...).
 - Edges come from parsed call sites, resolved in this order:
-  1. same file / same class for `self`/`this`
+  1. a method of the caller's own class for `self`/`this`
   2. the qualifying type (`Config::new` → `impl Config`) or module/package (`click.echo` → `click/`)
   3. imported files, including what barrel files (`__init__.py`, `index.ts`, `mod.rs`, `lib.rs`) re-export
-  4. otherwise only unambiguous matches, so common names don't fan out into false edges
-- Cross-boundary tracing: frontend `fetch`/`axios` → backend routes for:
-  - Express, FastAPI, Flask, Django, Spring
+  4. otherwise only unambiguous matches (preferring the product's own code over tests), so common names don't fan out into false edges
+- A bare `name()` call in Python, JS/TS or Rust never resolves to a method (constructors aside)
+- Cross-boundary tracing: frontend `fetch`/`axios` calls and generated API clients (`{ url: '/api/v1/...' }` request options, with the method from `method:` or `client.post(...)`) → backend routes for:
+  - Express, FastAPI (including `APIRouter(prefix=...)`), Flask, Django, Spring
   - Actix Web, Rocket, Axum
-- DB query hints
+- DB query nodes (SELECT / INSERT / UPDATE / DELETE / QUERY) only for known database clients and ORMs: SQL string literals, Django `Model.objects.*`, Prisma, MongoDB driver / ODM methods, Mongoose / Sequelize / TypeORM model statics, and `session` / `db` / `cursor` / `conn` calls in files that use a database driver or ORM. Generic `.get(` / `.update(` / `.filter(` calls are not database queries.
 
 ### Dependency Extraction (`project_manifests.py`)
 - **Python:** `requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.cfg`, `setup.py`
@@ -218,6 +222,7 @@ For every project root (nested roots of the same ecosystem collapse into the top
   6. `python -m pkg`
   7. a `__main__` file
 - **JS/TS:** npm / pnpm / yarn / bun from lockfiles; `dev`/`start`/`build`/`test` scripts
+- **Workspaces:** npm / yarn / bun `workspaces`, `pnpm-workspace.yaml` and `[tool.uv.workspace]` members get their own card, with commands run from the member's directory (e.g. `cd backend && uv run uvicorn app.main:app --reload`); the workspace root keeps the install command
 - **Rust:** `cargo build/run/test`; workspaces use `--workspace` and `cargo run -p <bin crate>`
 - **Java:** `./mvnw` or `./gradlew` when present; `spring-boot:run` / `bootRun` / `quarkus:dev` / Gradle `application` run; Android `assembleDebug`
 - **C/C++:**
@@ -244,6 +249,7 @@ For every project root (nested roots of the same ecosystem collapse into the top
   - Go: Gin, Fiber, Echo
   - Ruby on Rails, Laravel
 - Backends and databases are detected from **runtime** dependencies only. A server framework that appears only in devDependencies (e.g. a test server) doesn't count. Ecosystems without source files in the repo are ignored.
+- Only manifests and config files outside tests / examples / docs count (`examples/celery` does not make a repository a Celery + Redis project), unless the repository has nothing else.
 
 ### Database Detection
 - **SQL:** PostgreSQL, MySQL/MariaDB, SQLite, H2, Oracle
@@ -266,7 +272,7 @@ For every project root (nested roots of the same ecosystem collapse into the top
 - **Order:** application code first, then tests/examples.
 
 ### Tests
-`server/tests/test_language_support.py` runs one realistic mini-project per language through the full analyzer: symbols, import resolution, call graph, manifests, frameworks, databases, entry points, build commands, and the chunker. Run with `cd server && pip install -r requirements-dev.txt && pytest`.
+`server/tests/test_language_support.py` runs one realistic mini-project per language through the full analyzer: symbols, import resolution, call graph, manifests, frameworks, databases, entry points, build commands, and the chunker. `server/tests/test_analysis_quality.py` covers the path classifier, database and cross-language call edges, generated API clients, examples/tests/generated files in detection and the AI report inputs, architecture layering and size, class-qualified call-graph nodes, and workspace quick starts. Run with `cd server && pip install -r requirements-dev.txt && pytest`.
 
 ---
 

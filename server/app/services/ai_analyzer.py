@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from typing import Dict, Any, List
 
 from app.services.llm import completion_kwargs, groq_api_key
+from app.services.path_classifier import is_primary, primary_paths
 
 def get_groq_client():
     api_key = groq_api_key()
@@ -68,17 +69,27 @@ STRICT REQUIREMENTS:
         languages = self.data.get("languages", {})
         frameworks = self.data.get("frameworks", {})
         databases = self.data.get("databases", [])
+        # The product's own code only: tests, examples, docs and generated files must not
+        # decide what the report says the repository is (falls back to everything when the
+        # repository has no primary code).
         entry_points = self.data.get("entryPoints", [])
-        
+        primary_entries = [p for p in entry_points if is_primary(p)]
+        entry_points = primary_entries or entry_points
+
         # Get top files by complexity
         file_list = self.data.get("complexity", {}).get("fileList", [])
-        top_files = sorted(file_list, key=lambda x: x.get("lines", 0), reverse=True)[:20]
-        
-        # Get dependency summary (who depends on whom)
+        keep = set(primary_paths(f.get("file", "") for f in file_list))
+        top_files = sorted((f for f in file_list if f.get("file", "") in keep),
+                           key=lambda x: x.get("lines", 0), reverse=True)[:20]
+
+        # Get dependency summary (who depends on whom): the most connected primary files
         file_deps = self.data.get("file_dependencies", {})
+        keep_deps = set(primary_paths(file_deps))
+        connected = sorted(((file, [d for d in deps.get("resolved", []) if d in keep_deps])
+                            for file, deps in file_deps.items() if file in keep_deps),
+                           key=lambda item: (-len(item[1]), item[0]))
         dep_summary = []
-        for file, deps in list(file_deps.items())[:15]:
-            resolved = deps.get("resolved", [])
+        for file, resolved in connected[:15]:
             if resolved:
                 dep_summary.append(f"{file} -> {', '.join(resolved[:5])}")
 
