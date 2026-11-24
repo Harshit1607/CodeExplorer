@@ -47,6 +47,9 @@ def chat(data: ChatRequest):
 
     pipeline = sessions.get(data.session_id)
     if not pipeline and not data.analysis_data:
+        if data.session_id:
+            # The client resends with analysis_data on this status.
+            raise HTTPException(status_code=404, detail="Session not found or expired")
         raise HTTPException(
             status_code=400,
             detail="Repository analysis data is missing. Please wait for analysis to complete."

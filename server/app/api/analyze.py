@@ -2,8 +2,9 @@ import asyncio
 import uuid
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.core import config
+from app.core.cors import origin_allowed
 from app.core.rate_limit import check as rate_check, client_key, too_many_message
 from app.services.streaming_pipeline import StreamingPipeline, HEARTBEAT, format_sse
 from app.services.session_store import sessions
@@ -73,6 +74,11 @@ def _is_session_id(value: str) -> bool:
 
 @router.get("/analyze/stream")
 async def analyze_stream(request: Request, repo: str = "", session_id: str = None):
+    # EventSource requests skip the CORS preflight, so a foreign page could start
+    # analyses it can't even read; refuse them before any work is done.
+    origin = request.headers.get("origin")
+    if origin and not origin_allowed(origin):
+        return JSONResponse({"detail": "Origin not allowed."}, status_code=403)
     try:
         repo = normalize_github_url(repo)
     except ValueError as e:

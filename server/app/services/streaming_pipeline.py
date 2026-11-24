@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -51,6 +52,20 @@ INTERNAL_ERROR_MESSAGE = "The analysis failed because of an internal error. Plea
 # Clone folders are named `<session uuid>-<8 hex>`; only names like that are ever deleted
 # from CLONE_DIR, so pointing it at a shared directory can't wipe unrelated files.
 _CLONE_NAME_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(-[0-9a-f]{8})?$")
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill git and its helpers (git-remote-https, index-pack), which hold its stderr pipe open."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)   # git leads its own process group (start_new_session)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if proc.poll() is None:
+        proc.kill()
 
 
 def clean_clone_dir(base_dir: Optional[str] = None) -> int:
@@ -198,7 +213,7 @@ class StreamingPipeline:
         self.cancelled = True
         proc = self._clone_proc
         if proc and proc.poll() is None:
-            proc.kill()
+            _kill_tree(proc)
         if self._task and not self._task.done():
             self._task.cancel()
 
@@ -342,15 +357,15 @@ class StreamingPipeline:
                "--", self.repo_url, self.repo_path]
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}   # never wait for credentials
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE, env=env)
+                                stderr=subprocess.PIPE, env=env, start_new_session=True)
         self._clone_proc = proc
         if self.cancelled:   # cancel() ran before the process handle was published
-            proc.kill()
+            _kill_tree(proc)
 
         def _on_timeout():
             if proc.poll() is None:
                 self._clone_timed_out = True
-                proc.kill()
+                _kill_tree(proc)
 
         timer = None
         if config.CLONE_TIMEOUT_SECONDS > 0:
