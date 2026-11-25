@@ -31,7 +31,7 @@ CodeExplorer solves this by:
 - 🛠️ **Quick Start Guide**: Ready-to-run install / build / run / test commands for each project in the repo, picked from its lockfiles and wrappers (`uv`, `poetry`, `pnpm`, `./mvnw`, `./gradlew`, `cargo`, CMake…)
 - 🔍 **Semantic Search**: Hybrid vector + keyword search over code, docs and config files (local embeddings, no API key)
 - 💬 **Repository Chat (RAG)**: Ask questions about the code, or how to set up, test and deploy it (README, docs/, Dockerfile, compose, CI and Makefile are indexed too); answers cite the exact files and lines they come from
-- ✨ **AI Architecture Report**: Written from retrieved code excerpts (entry points, key modules, routes, models, setup docs) plus repository metadata; its `path:line` citations are checked against those excerpts and link to the source
+- ✨ **AI Architecture Report**: Written from retrieved code excerpts (entry points, key modules, routes, models, setup docs) plus repository metadata; its `path:line` citations are checked against those excerpts and link to the excerpt lines they point into
 - ⭐ **Key Files Detection**: Automatic identification of entry points and important files
 - 🛡️ **Rate Limiting**: Per-client limits and a cap on concurrent analyses
 - 🎨 **Modern Dashboard**: Clean, responsive UI with dark mode support

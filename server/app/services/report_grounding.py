@@ -300,7 +300,8 @@ def _strings(value) -> List[str]:
 def check_citations(report: dict, sources: List[dict]) -> dict:
     """
     Check the report's citations against the excerpts the model was given.
-      citations          {key: {file, start_line, end_line}}  verified: they point into a sent excerpt
+      citations          {key: {file, start_line, end_line}}  verified: they point into a sent excerpt;
+                         the range is clamped to the lines of that excerpt the model was shown
       unverified         [key]  cited a file or lines the model was not shown
       uncited_sections   sections without a single verified citation
       spans              {text: [{at, to, verified, file?, start_line?, end_line?}]}  where the
@@ -324,8 +325,9 @@ def check_citations(report: dict, sources: List[dict]) -> dict:
                     matches = [p for p in ranges if p.endswith("/" + path)]
                     file = matches[0] if len(matches) == 1 else None
                 span = {"at": at, "to": to, "verified": False}
-                if file and any(start <= e and s <= end for s, e in ranges[file]):
-                    verified[key] = {"file": file, "start_line": start, "end_line": end}
+                shown = next(((s, e) for s, e in ranges[file] if start <= e and s <= end), None) if file else None
+                if shown:
+                    verified[key] = {"file": file, "start_line": max(start, shown[0]), "end_line": min(end, shown[1])}
                     span.update(verified[key], verified=True)
                     section_ok = True
                 elif key not in unverified:

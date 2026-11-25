@@ -224,6 +224,19 @@ def test_citation_format():
     assert find_citations("app/[slug]/page.tsx:2") == [("app/[slug]/page.tsx:2", "app/[slug]/page.tsx", 2, 2, 0, 21)]
 
 
+def test_over_wide_citation_is_clamped_to_the_lines_shown():
+    # The model saw lines 1-12 only; a citation of 1-200 must not vouch for (or link to) lines 13-200.
+    sources = [{"file": "app/main.py", "start_line": 1, "end_line": 12, "symbol": None, "reason": "entry_point"}]
+    text = "See app/main.py:1-200 and app/main.py:10-90."
+    out = check_citations({"architecture_summary": text}, sources)
+    assert out["citations"] == {
+        "app/main.py:1-200": {"file": "app/main.py", "start_line": 1, "end_line": 12},
+        "app/main.py:10-90": {"file": "app/main.py", "start_line": 10, "end_line": 12},
+    }
+    assert [(s["verified"], s["start_line"], s["end_line"]) for s in out["spans"][text]] == [(True, 1, 12), (True, 10, 12)]
+    assert out["uncited_sections"] == []
+
+
 def test_citation_spans_cover_non_ascii_paths_in_ui_string_offsets():
     # The UI slices report strings with these offsets, so they are JS (UTF-16) indices:
     # "é" is one unit, "🚀" is a surrogate pair (two units). The whole non-ASCII path is the citation.
