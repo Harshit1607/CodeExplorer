@@ -102,9 +102,9 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - `search_index_progress` / `search_index_ready`: Vector index build status (runs concurrently)
   - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done
 - `GET /api/analyze/{session_id}/status` — Pipeline and search-index status for a session.
-- `POST /api/search` — Hybrid semantic search. Body: `query`, `session_id` (preferred), optional `mode` (`hybrid` | `semantic` | `keyword`), `limit`, and optional `analysis_data` fallback. Returns ranked results with match type, similarity, line range, and code snippet.
+- `POST /api/search` — Hybrid semantic search. Body: `query`, `session_id` (preferred), optional `mode` (`hybrid` | `semantic` | `keyword`), `limit`, and optional `analysis_data` fallback (not needed while the session is alive; an unknown `session_id` without it returns **404**, and the client then resends once with it). Returns ranked results with match type, similarity, line range, and code snippet.
 - `GET /api/search/status?session_id=` — Vector index status.
-- `POST /api/chat` — Retrieval-augmented Q&A. Body: `question`, `session_id` (preferred), optional `chat_history`, optional slim `analysis_data` fallback. Returns `response`, `sources` (`file`, `start_line`, `end_line`, `symbol`, `reason`) and `retrieval` (`semantic` | `files`).
+- `POST /api/chat` — Retrieval-augmented Q&A. Body: `question`, `session_id` (preferred), optional `chat_history` (`user` / `assistant` messages; other roles are ignored), optional slim `analysis_data` fallback (same rule as search: only sent after a **404** for an expired session). Returns `response`, `sources` (`file`, `start_line`, `end_line`, `symbol`, `reason`) and `retrieval` (`semantic` | `files`).
 - `GET /api/health` — Health check (reports whether vector search is enabled).
 
 ---
@@ -280,11 +280,28 @@ Per-client sliding-window limits (in-memory, `app/core/rate_limit.py`), configur
 | `RATE_LIMIT_CHAT` | `6/minute;100/day` | `POST /api/chat` (the Groq free tier allows 1000 requests/day for the whole server) |
 | `RATE_LIMIT_SEARCH` | `60/minute` | `POST /api/search` |
 | `MAX_CONCURRENT_ANALYSES` | `3` | Global cap on running analyses (clone + CPU embedding). Checked before the per-client limit, so a "busy" rejection costs no quota. |
+| `MAX_ANALYSES_PER_CLIENT` | `1` | Running analyses per client (`0` = no limit), so one client can't fill every global slot. Starting a new analysis cancels the same client's previous one if nobody is watching it any more; one still being watched (e.g. in another tab) is kept and the new request is refused. |
+
+Analyses and clones are also bounded:
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `ANALYSIS_ABANDON_GRACE_SECONDS` | `10` | A running analysis is cancelled (clone killed, work stopped, clone deleted) this long after its last viewer disconnects, unless a viewer reconnects first. Finished sessions are never cancelled and stay replayable. |
+| `MAX_REPO_SIZE_MB` | `1500` | Repositories whose GitHub-reported size (whole history, fetched before cloning) is larger are refused with a fatal `error` event (`0` = no cap). The cap is skipped when GitHub metadata is unavailable (e.g. the unauthenticated 60 requests/hour limit is used up), leaving only `CLONE_TIMEOUT_SECONDS`; set `GITHUB_TOKEN` on shared deployments. |
+| `CLONE_TIMEOUT_SECONDS` | `300` | The `git clone` is killed and the analysis fails after this long (`0` = no timeout). |
+| `CLONE_DIR` | `<system temp>/codeexplorer` | Where repositories are cloned. At startup, clone folders left behind by a previous run (crash, restart, `--reload`) are deleted; only UUID-named folders are touched. |
 
 - JSON endpoints return **429** with a `Retry-After` header (exposed via CORS). Upstream Groq 429s pass Groq's own `retry-after` through.
 - The SSE endpoint returns a single fatal `error` event (`rate_limited: true`, `retry_after`), because `EventSource` cannot read non-200 responses.
 - Client identity is the socket address. Behind reverse proxies set `RATE_LIMIT_PROXY_HOPS=N` (the client is taken from the N-th `X-Forwarded-For` entry from the right; left-most entries are spoofable), or run uvicorn with `--forwarded-allow-ips`.
 - Limits live in process memory: run a single worker (sessions and vector indexes are in-memory too). `RATE_LIMIT_ENABLED=false` disables limiting.
+
+Request hardening:
+
+- **CORS:** `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser origins allowed to call the API (`*` = any). When empty (the default) only `localhost` / `127.0.0.1` / `[::1]` on any port are allowed, which covers local development. Set it to the frontend's origin in production. `GET /api/analyze/stream` (an `EventSource`, which skips the CORS preflight) refuses requests from any other `Origin` with **403** before starting work. Requests without an `Origin` header are refused when `Sec-Fetch-Site` is `cross-site` or `same-site` (e.g. an `<img>` on another site); curl, typed URLs and same-origin requests are accepted.
+- **Body size:** request bodies above `MAX_REQUEST_BODY_MB` (default `8`, `0` = no limit) are rejected with **413**.
+- **Chat history:** only `user` and `assistant` messages from the client's `chat_history` are passed to the LLM; any other role (e.g. an injected `system` message) is dropped.
+- **Errors:** unexpected failures (chat, AI report, pipeline) return a generic message; details are only written to the server log.
 
 ---
 

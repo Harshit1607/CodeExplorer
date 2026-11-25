@@ -214,7 +214,7 @@ npm run dev -- --port 3001
   1. Verify backend is running on http://localhost:8000
   2. Check `.env.local` has correct API URL
   3. Open browser console for detailed error messages
-  4. Verify CORS is configured correctly in backend
+  4. If the frontend is not served from `localhost` / `127.0.0.1`, add its origin to `CORS_ALLOWED_ORIGINS` in `server/.env`
 
 ### Common Issues
 
@@ -290,7 +290,7 @@ npm run preview   # local check of the production build
 ```
 
 3. **Environment**: Set production environment variables
-4. **Security**: Configure CORS and review the rate limits in `.env` (see `docs/TechSpecs.md` §9)
+4. **Security**: Set `CORS_ALLOWED_ORIGINS` to your frontend's origin (by default only `localhost` origins may call the API) and review the rate, size and time limits in `.env` (see `docs/TechSpecs.md` §9)
 5. **Monitoring**: Add logging and error tracking
 
 ---

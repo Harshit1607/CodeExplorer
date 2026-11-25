@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import { normalizeGithubUrl } from '../lib/githubUrl';
 
 export interface SearchIndexState {
   status: 'idle' | 'building' | 'ready' | 'failed' | 'unavailable';
@@ -95,10 +96,12 @@ export function useAnalysis() {
   const [state, setState] = useState<AnalysisState>(initialState);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const startAnalysis = useCallback((repoUrl: string, forceNew = false) => {
+  const startAnalysis = useCallback((rawRepoUrl: string, forceNew = false) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
+    // One session per repository: `…/repo`, `…/repo/`, `…/repo.git` etc. share the same key.
+    const repoUrl = normalizeGithubUrl(rawRepoUrl) ?? rawRepoUrl.trim();
 
     if (forceNew) {
       sessionStorage.removeItem(`codeexplorer_session_${repoUrl}`);

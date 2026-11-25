@@ -76,17 +76,27 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
 
     try {
       const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      const response = await axios.post(`${API_BASE_URL}/api/search`, {
+      const sessionId = analysisData?.sessionId;
+      const send = (withData: boolean) => axios.post(`${API_BASE_URL}/api/search`, {
         query: q,
         mode: searchMode,
-        session_id: analysisData?.sessionId,
-        // Slim fallback in case the server session expired (keyword search only).
-        analysis_data: { complexity: { fileList: analysisData?.complexity?.fileList || [] } },
+        session_id: sessionId,
+        // Slim fallback, only once the server session has expired (keyword search only).
+        analysis_data: withData ? { complexity: { fileList: analysisData?.complexity?.fileList || [] } } : undefined,
       });
+      let response;
+      try {
+        response = await send(!sessionId);
+      } catch (err: any) {
+        if (!sessionId || err.response?.status !== 404) throw err;
+        response = await send(true);
+      }
       setResults(response.data);
     } catch (err: any) {
       console.error('Search error:', err);
-      setError(err.response?.data?.detail || 'Search failed. Please try again.');
+      setError(err.response?.status === 413
+        ? 'Your analysis session has expired. Re-run the analysis to search again.'
+        : err.response?.data?.detail || 'Search failed. Please try again.');
     } finally {
       setIsLoading(false);
     }

@@ -1,6 +1,6 @@
 """In-memory registry of analysis sessions with TTL / size based eviction."""
 import time
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from app.core import config
 
@@ -29,10 +29,10 @@ class SessionStore:
         self._enforce_limit()
 
     def sweep(self) -> None:
-        """Drop finished sessions nobody has touched for `ttl` seconds."""
+        """Drop cancelled sessions, and finished ones nobody has touched for `ttl` seconds."""
         now = time.time()
         expired = [sid for sid, p in self._sessions.items()
-                   if p.is_done and not p.clients and now - p.last_access > self.ttl]
+                   if p.is_done and not p.clients and (p.cancelled or now - p.last_access > self.ttl)]
         for sid in expired:
             self._sessions.pop(sid, None)
 
@@ -46,8 +46,12 @@ class SessionStore:
             self._sessions.pop(sid, None)
 
     def active_count(self) -> int:
-        """Analyses still running (cloning / scanning / indexing)."""
-        return sum(1 for p in self._sessions.values() if not p.is_done)
+        """Analyses still running (cloning / scanning / indexing), not counting cancelled ones."""
+        return sum(1 for p in self._sessions.values() if p.running)
+
+    def running_for_client(self, client_key: str) -> List["StreamingPipeline"]:
+        """Running analyses started by one client."""
+        return [p for p in self._sessions.values() if p.running and p.client_key == client_key]
 
     def __len__(self) -> int:
         return len(self._sessions)

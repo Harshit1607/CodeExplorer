@@ -51,6 +51,9 @@ def search(data: SearchRequest):
     over embedded code chunks (when the session's index is ready).
     """
     pipeline = sessions.get(data.session_id)
+    if not pipeline and data.session_id and not data.analysis_data:
+        # The client resends with analysis_data on this status.
+        raise HTTPException(status_code=404, detail="Session not found or expired")
     if pipeline:
         files = pipeline.analyzer.files
         index = pipeline.vector_index

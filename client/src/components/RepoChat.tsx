@@ -139,6 +139,12 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
           type: 'auth',
           canRetry: false,
         };
+      case 413:
+        return {
+          message: 'Your analysis session has expired. Re-run the analysis to keep chatting.',
+          type: 'generic',
+          canRetry: false,
+        };
       case 503:
         return {
           message: 'AI service is temporarily unavailable. Please try again later.',
@@ -181,12 +187,21 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
 
     try {
       const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      const response = await axios.post(`${API_BASE_URL}/api/chat`, {
+      const sessionId = analysisData?.sessionId;
+      const send = (withData: boolean) => axios.post(`${API_BASE_URL}/api/chat`, {
         question: userMessage,
-        session_id: analysisData?.sessionId,
-        analysis_data: slimAnalysis(analysisData),
+        session_id: sessionId,
+        analysis_data: withData ? slimAnalysis(analysisData) : undefined,
         chat_history: messages.map(({ role, content }) => ({ role, content })),
       });
+      // The server uses its own session data; only resend the analysis once it has expired.
+      let response;
+      try {
+        response = await send(!sessionId);
+      } catch (err: any) {
+        if (!sessionId || err.response?.status !== 404) throw err;
+        response = await send(true);
+      }
 
       setMessages(prev => [...prev, {
         role: 'assistant',
@@ -203,8 +218,9 @@ export default function RepoChat({ analysisData }: RepoChatProps) {
         setRetryCountdown(errorInfo.retryAfter);
       }
 
-      // Remove the user message if we failed
+      // Take the question out of the history and put it back in the input box, so it can be resent.
       setMessages(prev => prev.slice(0, -1));
+      setInput(prev => (prev.trim() ? prev : userMessage));
     } finally {
       setIsLoading(false);
       inputRef.current?.focus();

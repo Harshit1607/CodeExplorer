@@ -129,7 +129,7 @@ client/
 **API Connection Error**
 - Ensure the backend is running on the correct port
 - Check that `VITE_API_URL` is set correctly (restart `npm run dev` after changing it)
-- Verify CORS is enabled on the backend
+- If the frontend is not served from `localhost` / `127.0.0.1`, add its origin to `CORS_ALLOWED_ORIGINS` in `server/.env` (see `docs/TechSpecs.md` §9)
 
 **Build Errors**
 - Clear the build output: `rm -rf dist`

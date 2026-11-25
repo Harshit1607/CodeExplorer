@@ -1,3 +1,4 @@
+import traceback
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -46,6 +47,9 @@ def chat(data: ChatRequest):
 
     pipeline = sessions.get(data.session_id)
     if not pipeline and not data.analysis_data:
+        if data.session_id:
+            # The client resends with analysis_data on this status.
+            raise HTTPException(status_code=404, detail="Session not found or expired")
         raise HTTPException(
             status_code=400,
             detail="Repository analysis data is missing. Please wait for analysis to complete."
@@ -58,6 +62,7 @@ def chat(data: ChatRequest):
         return ChatResponse(**result)
     except HTTPException:
         raise
-    except Exception as e:
-        print(f"Unexpected chat error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Details stay in the server log; the client only gets a generic message.
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Chat failed because of an internal error. Please try again.")

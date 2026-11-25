@@ -4,7 +4,7 @@ from groq import AsyncGroq
 from fastapi import HTTPException
 from typing import Dict, Any, List
 
-from app.services.llm import completion_kwargs, groq_api_key
+from app.services.llm import completion_kwargs, groq_api_key, map_llm_error
 
 def get_groq_client():
     api_key = groq_api_key()
@@ -59,8 +59,8 @@ STRICT REQUIREMENTS:
             
             return json.loads(response.choices[0].message.content)
         except Exception as e:
-            print(f"AI Analysis Error: {e}")
-            return {"error": f"Failed to generate AI report: {str(e)}"}
+            print(f"AI Analysis Error: {e!r}")
+            return {"error": f"Failed to generate AI report: {map_llm_error(e).detail}"}
 
     def _build_condensed_context(self) -> str:
         """Build a high-quality summary of the repo for the LLM."""

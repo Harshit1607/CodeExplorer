@@ -15,6 +15,9 @@ import asyncio
 import json
 import os
 import re
+import signal
+import subprocess
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -37,7 +40,50 @@ HEARTBEAT = ": heartbeat\n\n"
 
 
 class PipelineError(Exception):
-    """Fatal error: the analysis cannot continue."""
+    """Fatal error: the analysis cannot continue. Its message is shown to the user."""
+
+
+class PipelineCancelled(Exception):
+    """Raised inside worker threads to stop work for a cancelled pipeline."""
+
+
+INTERNAL_ERROR_MESSAGE = "The analysis failed because of an internal error. Please try again."
+
+# Clone folders are named `<session uuid>-<8 hex>`; only names like that are ever deleted
+# from CLONE_DIR, so pointing it at a shared directory can't wipe unrelated files.
+_CLONE_NAME_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(-[0-9a-f]{8})?$")
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill git and its helpers (git-remote-https, index-pack), which hold its stderr pipe open."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)   # git leads its own process group (start_new_session)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if proc.poll() is None:
+        proc.kill()
+
+
+def clean_clone_dir(base_dir: Optional[str] = None) -> int:
+    """Delete clone folders left behind by a previous server run. Returns how many were removed."""
+    base_dir = base_dir or config.CLONE_DIR
+    try:
+        names = os.listdir(base_dir)
+    except OSError:
+        return 0
+    removed = 0
+    for name in names:
+        path = os.path.join(base_dir, name)
+        if _CLONE_NAME_RE.match(name) and os.path.isdir(path) and not os.path.islink(path):
+            remove_tree(path)
+            removed += 1
+    if removed:
+        print(f"Removed {removed} orphaned clone folder(s) from {base_dir}")
+    return removed
 
 
 def format_sse(event: str, stage: str, progress: int, data: Any) -> str:
@@ -86,9 +132,9 @@ class StreamingPipeline:
         self.repo_url = repo_url.strip().rstrip("/")
         self.repo_id = str(uuid.UUID(session_id)) if session_id else str(uuid.uuid4())
 
-        base = os.environ.get("TEMP", "C:\\temp") if os.name == "nt" else "/tmp"
-        self.base_dir = os.path.join(base, "codeexplorer")
-        self.repo_path = os.path.join(self.base_dir, self.repo_id)
+        self.base_dir = config.CLONE_DIR
+        # Unique per pipeline, so a restarted session never shares a folder with the old one.
+        self.repo_path = os.path.join(self.base_dir, f"{self.repo_id}-{uuid.uuid4().hex[:8]}")
         os.makedirs(self.base_dir, exist_ok=True)
 
         self.analyzer = CodeAnalyzer(self.repo_path)
@@ -107,6 +153,12 @@ class StreamingPipeline:
         self.started_at = time.time()
         self.last_access = time.time()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.client_key: Optional[str] = None   # who started it (per-client limit)
+        self.cancelled = False
+        self._task: Optional[asyncio.Task] = None
+        self._abandon_timer: Optional[asyncio.TimerHandle] = None
+        self._clone_proc: Optional[subprocess.Popen] = None
+        self._clone_timed_out = False
 
     # ------------------------------------------------------------------ events
     def touch(self) -> None:
@@ -117,11 +169,53 @@ class StreamingPipeline:
         q: asyncio.Queue = asyncio.Queue()
         self.clients.add(q)
         self.touch()
+        if self._abandon_timer:
+            self._abandon_timer.cancel()
+            self._abandon_timer = None
         return list(self.history), q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self.clients.discard(q)
         self.touch()
+        if not self.clients and self.running and self._abandon_timer is None:
+            # Nobody is watching: cancel after a grace period unless a viewer (re)connects.
+            loop = self.loop
+            if loop is None or loop.is_closed():
+                return
+            grace = max(0, config.ANALYSIS_ABANDON_GRACE_SECONDS)
+            loop.call_soon_threadsafe(self._arm_abandon_timer, grace)
+
+    def _arm_abandon_timer(self, grace: float) -> None:
+        if self._abandon_timer is None and not self.clients and self.running:
+            self._abandon_timer = self.loop.call_later(grace, self._cancel_if_abandoned)
+
+    def _cancel_if_abandoned(self) -> None:
+        self._abandon_timer = None
+        if not self.clients and self.running:
+            print(f"[{self.repo_id}] no viewers left; cancelling analysis")
+            self.cancel()
+
+    # ------------------------------------------------------------- lifecycle
+    @property
+    def running(self) -> bool:
+        """Still working and not cancelled (counts against the concurrency limits)."""
+        return not self.is_done and not self.cancelled
+
+    def start(self) -> asyncio.Task:
+        self.loop = asyncio.get_running_loop()
+        self._task = asyncio.create_task(self.run())
+        return self._task
+
+    def cancel(self) -> None:
+        """Stop the analysis: kill a running clone and cancel the pipeline task."""
+        if self.is_done or self.cancelled:
+            return
+        self.cancelled = True
+        proc = self._clone_proc
+        if proc and proc.poll() is None:
+            _kill_tree(proc)
+        if self._task and not self._task.done():
+            self._task.cancel()
 
     def emit(self, event: str, stage: str, progress: Optional[int] = None,
              data: Any = None, terminal: bool = False) -> None:
@@ -149,9 +243,10 @@ class StreamingPipeline:
         self.loop = asyncio.get_running_loop()
         index_task: Optional[asyncio.Task] = None
         try:
-            meta_task = asyncio.create_task(self._fetch_repo_meta())
+            # Metadata first: its size decides whether the repository may be cloned at all.
+            await self._fetch_repo_meta()
+            self._check_repo_size()
             await self._clone_repo()
-            await meta_task
             await self._scan_files()
 
             index_task = asyncio.create_task(self._build_search_index())
@@ -165,17 +260,27 @@ class StreamingPipeline:
                 "warnings": self.warnings,
                 "search_index": self.vector_index.info(),
             }, terminal=True)
+        except (asyncio.CancelledError, PipelineCancelled):
+            self.cancelled = True
+            if index_task and not index_task.done():
+                index_task.cancel()
+            self.emit("error", "Pipeline", None,
+                      {"message": "The analysis was cancelled.", "fatal": True}, terminal=True)
         except Exception as e:
             if index_task and not index_task.done():
                 index_task.cancel()
             print(f"[{self.repo_id}] pipeline failed: {e!r}")
-            self.emit("error", "Pipeline", None, {"message": str(e), "fatal": True}, terminal=True)
+            message = str(e) if isinstance(e, PipelineError) else INTERNAL_ERROR_MESSAGE
+            self.emit("error", "Pipeline", None, {"message": message, "fatal": True}, terminal=True)
         finally:
             self.is_done = True
             self.touch()
+            if self._abandon_timer:
+                self._abandon_timer.cancel()
+                self._abandon_timer = None
             self.analyzer._file_contents.clear()
-            await self._in_thread(remove_tree, self.repo_path)
-            self.executor.shutdown(wait=False)
+            self.executor.shutdown(wait=False, cancel_futures=True)
+            await asyncio.to_thread(remove_tree, self.repo_path)
 
     # ---------------------------------------------------------- stage 1: clone
     def _owner_and_name(self) -> Optional[Tuple[str, str]]:
@@ -193,7 +298,8 @@ class StreamingPipeline:
         if config.GITHUB_TOKEN:
             headers["Authorization"] = f"Bearer {config.GITHUB_TOKEN}"
         try:
-            async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+            # Renamed / transferred repositories answer with a redirect to the new location.
+            async with httpx.AsyncClient(timeout=10.0, headers=headers, follow_redirects=True) as client:
                 resp = await client.get(f"https://api.github.com/repos/{ids[0]}/{ids[1]}")
             if resp.status_code == 200:
                 meta = resp.json()
@@ -211,41 +317,99 @@ class StreamingPipeline:
             else:
                 self.warn("Cloning", f"GitHub API returned {resp.status_code} for repository metadata.")
         except Exception as e:
-            self.warn("Cloning", f"Could not fetch repository metadata: {e}")
+            print(f"[{self.repo_id}] repository metadata request failed: {e!r}")
+            self.warn("Cloning", "Could not fetch repository metadata from GitHub.")
+
+    def _check_repo_size(self) -> None:
+        """Refuse repositories above MAX_REPO_SIZE_MB (GitHub reports `size` in KB)."""
+        limit_mb = config.MAX_REPO_SIZE_MB
+        size_kb = self.repo_meta.get("size")
+        if limit_mb <= 0 or not isinstance(size_kb, (int, float)):
+            return
+        if size_kb > limit_mb * 1024:
+            raise PipelineError(f"Repository is too large to analyze ({size_kb / 1024:,.0f} MB; "
+                                f"this server's limit is {limit_mb:,} MB).")
 
     async def _clone_repo(self) -> None:
-        self.emit("clone_progress", "Cloning", 1, {"phase": "Starting clone"})
+        self.emit("clone_progress", "Cloning", 3, {"phase": "Starting clone"})
 
         progress = _CloneProgress(self)
-
-        def _clone():
-            remove_tree(self.repo_path)
-            repo = Repo.clone_from(self.repo_url, self.repo_path, depth=1,
-                                   single_branch=True, progress=progress)
-            try:
-                return repo.active_branch.name
-            except Exception:
-                return None
-
         try:
-            branch = await self._in_thread(_clone)
+            branch = await self._in_thread(self._run_clone, progress)
+        except (PipelineError, PipelineCancelled):
+            raise
         except Exception as e:
-            # With a progress handler, git's stderr lands in progress.error_lines.
-            detail = "\n".join(progress.error_lines) + "\n" + str(getattr(e, "stderr", "") or e)
-            m = re.search(r"(?:fatal|error): [^\n]+", detail)
-            if m:
-                reason = m.group(0).strip().rstrip("'")
-            elif "exit code(128)" in detail:
-                reason = "repository not found, private, or unreachable"
-            else:
-                reason = detail.strip().splitlines()[-1][:300]
-            raise PipelineError(f"Clone failed: {reason}")
+            print(f"[{self.repo_id}] clone failed: {e!r}")
+            raise PipelineError("Clone failed: could not run git.")
 
         # Fallback metadata when the GitHub API was unavailable.
         if not self.repo_meta.get("default_branch") and branch:
             self.repo_meta["default_branch"] = branch
             self.emit("repo_meta", "Cloning", 14, self.repo_meta)
         self.emit("clone_progress", "Cloning", 15, {"phase": "Clone complete"})
+
+    def _run_clone(self, progress: RemoteProgress) -> Optional[str]:
+        """Shallow-clone into repo_path (blocking). Killed on timeout or cancellation."""
+        remove_tree(self.repo_path)
+        if self.cancelled:
+            raise PipelineCancelled()
+        cmd = ["git", "clone", "--depth", "1", "--single-branch", "--progress",
+               "--", self.repo_url, self.repo_path]
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}   # never wait for credentials
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, env=env, start_new_session=True)
+        self._clone_proc = proc
+        if self.cancelled:   # cancel() ran before the process handle was published
+            _kill_tree(proc)
+
+        def _on_timeout():
+            if proc.poll() is None:
+                self._clone_timed_out = True
+                _kill_tree(proc)
+
+        timer = None
+        if config.CLONE_TIMEOUT_SECONDS > 0:
+            timer = threading.Timer(config.CLONE_TIMEOUT_SECONDS, _on_timeout)
+            timer.daemon = True
+            timer.start()
+        tail: List[str] = []
+        try:
+            # git separates progress updates with \r and messages with \n.
+            buf = b""
+            while True:
+                chunk = proc.stderr.read1(4096) if hasattr(proc.stderr, "read1") else proc.stderr.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                *lines, buf = re.split(rb"[\r\n]", buf)
+                for raw in lines:
+                    line = raw.decode("utf-8", "replace").rstrip()
+                    if line:
+                        progress._parse_progress_line(line)
+                        tail = (tail + [line])[-20:]
+            if buf.strip():
+                tail.append(buf.decode("utf-8", "replace").strip())
+            code = proc.wait()
+        finally:
+            if timer:
+                timer.cancel()
+            if proc.stderr:
+                proc.stderr.close()
+            self._clone_proc = None
+
+        if self.cancelled:
+            raise PipelineCancelled()
+        if self._clone_timed_out:
+            raise PipelineError(f"Clone failed: timed out after {config.CLONE_TIMEOUT_SECONDS}s.")
+        if code != 0:
+            detail = "\n".join(progress.error_lines + tail)
+            m = re.search(r"(?:fatal|error): [^\n]+", detail)
+            reason = m.group(0).strip().rstrip("'") if m else "repository not found, private, or unreachable"
+            raise PipelineError(f"Clone failed: {reason}")
+        try:
+            return Repo(self.repo_path).active_branch.name
+        except Exception:
+            return None
 
     # ----------------------------------------------------------- stage 2: scan
     async def _scan_files(self) -> None:
@@ -257,6 +421,8 @@ class StreamingPipeline:
             self.warn("Scanning", "No supported source files were found in this repository.")
 
         def _analyze(path: Path):
+            if self.cancelled:
+                return path, None
             return path, self.analyzer._analyze_file(path)
 
         done = 0
@@ -361,8 +527,9 @@ class StreamingPipeline:
             }).generate_report()
             self.emit("ai_report_ready", "AI Report", 92, report)
         except Exception as e:
-            self.warn("AI Report", f"AI report failed: {e}")
-            self.emit("ai_report_ready", "AI Report", 92, {"error": str(e)})
+            print(f"[{self.repo_id}] AI report failed: {e!r}")
+            self.warn("AI Report", "AI report failed.")
+            self.emit("ai_report_ready", "AI Report", 92, {"error": "Failed to generate AI report."})
 
     # ----------------------------------------------- concurrent: vector index
     async def _build_search_index(self) -> None:
@@ -388,6 +555,8 @@ class StreamingPipeline:
         last = [0.0]
 
         def _progress(done: int, total: int):
+            if self.cancelled:
+                raise PipelineCancelled()   # stops the embedding loop after this batch
             now = time.time()
             if now - last[0] >= 0.5 or done >= total:
                 last[0] = now

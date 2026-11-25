@@ -106,9 +106,12 @@ class _FakePipeline:
         self.is_done = True
         self.clients = set()
         self.last_access = time.time()
+        self.cancelled = False
+        self.running = False
+        self.client_key = None
 
-    async def run(self):
-        return None
+    def start(self):
+        pass
 
     def touch(self):
         pass
