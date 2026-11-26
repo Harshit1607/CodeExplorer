@@ -7,13 +7,15 @@ budgeted context block. Candidates come from:
   2. files named in the question      (`semantic_search.py`, "the chunker")
   3. vector similarity to the question (+ the previous question for follow-ups)
 Selection then enforces a character budget, per-file caps and overlap removal.
+Docs/config chunks (README, docs/, Dockerfile, CI, ...) are capped unless the question is
+about setup, configuration or deployment, so they never crowd out code.
 """
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from app.services.code_chunker import CodeChunk
-from app.services.semantic_search import _SECONDARY_PATH_RE, _SECONDARY_QUERY_RE
+from app.services.semantic_search import _DOCS_QUERY_RE, _SECONDARY_PATH_RE, _SECONDARY_QUERY_RE
 
 MIN_SIMILARITY = 0.45
 MAX_CHUNKS_PER_FILE = 4
@@ -23,6 +25,9 @@ MAX_SECONDARY_CHUNKS = 2              # tests/examples unless the question asks 
 EXPLICIT_SYMBOL_SCORE = 3.0           # `backticked`, snake_case, camelCase, name()
 PLAIN_WORD_SYMBOL_SCORE = 0.8         # "option" matching class Option: comparable to a strong vector hit
 MAX_GRAPH_NEIGHBOURS = 4              # callers/callees pulled in for "where is X called" questions
+MAX_DOC_CHUNKS = 2                    # docs/config chunks for code questions
+MAX_DOC_CHUNKS_SETUP = 6              # ... and for setup / configure / deploy / run-the-tests questions
+DOCS_PENALTY = 0.9                    # docs/config vs code at equal similarity, for code questions
 
 _CALLERS_RE = re.compile(r"\b(called|calls?|callers?|invoked?|invokes|used|usages?|triggers?|references?)\b", re.I)
 _CALLEES_RE = re.compile(r"\b(what does .* (call|use)|depends? on|calls into|flow|trace|step by step|walk ?through)\b", re.I)
@@ -32,6 +37,8 @@ _LANG_FENCE = {
     "TypeScript": "typescript", "TypeScript (React)": "tsx", "Java": "java", "Go": "go",
     "Rust": "rust", "Ruby": "ruby", "PHP": "php", "C#": "csharp", "Swift": "swift",
     "Kotlin": "kotlin", "Scala": "scala", "C": "c", "C++": "cpp", "Vue": "vue", "Svelte": "svelte",
+    "Markdown": "markdown", "reStructuredText": "rst", "YAML": "yaml", "Dockerfile": "dockerfile",
+    "Makefile": "makefile", "Groovy": "groovy", "Env": "bash",
 }
 
 _STOPWORDS = {
@@ -89,6 +96,11 @@ def _mentioned_files(text: str, files: List[str]) -> List[str]:
     return [h for h in hits if len(by_name[h.rsplit("/", 1)[-1].lower()]) <= 2]
 
 
+def is_secondary(chunk: CodeChunk) -> bool:
+    """Test/example code. Docs/config chunks have their own cap and are never 'secondary'."""
+    return chunk.tag == "code" and bool(_SECONDARY_PATH_RE.search(chunk.file.lower()))
+
+
 def _overlaps(a: CodeChunk, b: CodeChunk) -> bool:
     if a.file != b.file:
         return False
@@ -115,8 +127,10 @@ class RepoRetriever:
         mentioned_files = _mentioned_files(question, sorted({c.file for c in chunks}))
         candidates = self._candidates(question, previous, query, chunks, mentioned_files)
         allow_secondary = bool(_SECONDARY_QUERY_RE.search(query))
+        max_docs = MAX_DOC_CHUNKS_SETUP if _DOCS_QUERY_RE.search(query) else MAX_DOC_CHUNKS
         outline = self._outline(mentioned_files)
-        selected = self._select(candidates, budget_chars - len(outline), allow_secondary, set(mentioned_files))
+        selected = self._select(candidates, budget_chars - len(outline), allow_secondary, set(mentioned_files),
+                                max_docs=max_docs)
         return outline + self._render(selected), [self._source(c) for c in selected]
 
     @staticmethod
@@ -133,7 +147,7 @@ class RepoRetriever:
         # 1. Symbols named in the question (or, for follow-ups, the previous question)
         by_symbol: Dict[str, List[CodeChunk]] = {}
         for c in chunks:
-            if c.symbol:
+            if c.symbol and c.tag == "code":
                 by_symbol.setdefault(_short(c.symbol).lower(), []).append(c)
         for text, weight in ((question, 1.0), (previous, 0.8)):
             for ident, explicit in _mentioned_identifiers(text).items():
@@ -154,9 +168,13 @@ class RepoRetriever:
 
         # 3. Semantic similarity (more candidates when we need to fill mentioned files)
         penalize = not _SECONDARY_QUERY_RE.search(query)
+        setup_question = bool(_DOCS_QUERY_RE.search(query))
         for c, sim in self.index.search(query, k=80 if mentioned else 40, min_score=MIN_SIMILARITY):
             score = sim
-            if penalize and _SECONDARY_PATH_RE.search(c.file.lower()):
+            if c.tag != "code":
+                if not setup_question:
+                    score *= DOCS_PENALTY
+            elif penalize and is_secondary(c):
                 score *= 0.85
             if c.file in mentioned:
                 score *= 1.3
@@ -196,7 +214,7 @@ class RepoRetriever:
             added = 0
             for nid in ids:
                 c = by_id.get(nid)
-                if c is None or _SECONDARY_PATH_RE.search(c.file.lower()):
+                if c is None or is_secondary(c):
                     continue
                 extra.append(Candidate(c, 0.9, "graph"))
                 added += 1
@@ -217,10 +235,11 @@ class RepoRetriever:
         return "\n".join(out) + ("\n" if out else "")
 
     def _select(self, cands: List[Candidate], budget: int, allow_secondary: bool,
-                mentioned: Optional[set] = None) -> List[Candidate]:
+                mentioned: Optional[set] = None, max_docs: int = MAX_DOC_CHUNKS) -> List[Candidate]:
         selected: List[Candidate] = []
         per_file: Dict[str, int] = {}
         secondary = 0
+        docs = 0
         used = 0
         mentioned = mentioned or set()
         for cand in cands:
@@ -228,8 +247,11 @@ class RepoRetriever:
             cap = MAX_CHUNKS_PER_FILE + (3 if c.file in mentioned else 0)
             if per_file.get(c.file, 0) >= cap and cand.reason == "semantic":
                 continue
-            is_secondary = bool(_SECONDARY_PATH_RE.search(c.file.lower()))
-            if is_secondary and not allow_secondary and cand.reason == "semantic" and secondary >= MAX_SECONDARY_CHUNKS:
+            secondary_code = is_secondary(c)
+            if secondary_code and not allow_secondary and cand.reason == "semantic" and secondary >= MAX_SECONDARY_CHUNKS:
+                continue
+            is_doc = c.tag != "code"
+            if is_doc and docs >= max_docs and c.file not in mentioned:
                 continue
             if any(_overlaps(c, s.chunk) for s in selected):
                 continue
@@ -242,7 +264,8 @@ class RepoRetriever:
                 cand = Candidate(trimmed, cand.score, cand.reason)
                 cost = remaining + 200
             selected.append(cand)
-            secondary += int(is_secondary)
+            secondary += int(secondary_code)
+            docs += int(is_doc)
             per_file[c.file] = per_file.get(c.file, 0) + 1
             used += cost
             if budget - used < 600:
@@ -281,12 +304,16 @@ class RepoRetriever:
         out = []
         for path in order:
             for c in sorted(groups[path], key=lambda x: x.start_line):
-                label = f" - {c.kind} `{c.symbol}`" if c.symbol else ""
+                if c.tag != "code":
+                    label = f" - {c.tag}" + (f" section \"{c.symbol}\"" if c.symbol else "")
+                else:
+                    label = f" - {c.kind} `{c.symbol}`" if c.symbol else ""
                 out.append(f"### {path} (lines {c.start_line}-{c.end_line}){label}")
                 info = self._call_info(c)
                 if info:
                     out.append(info)
-                out.append(f"```{_LANG_FENCE.get(c.language, '')}\n{c.code}\n```\n")
+                fence = "````" if "```" in c.code else "```"  # docs often contain fenced blocks
+                out.append(f"{fence}{_LANG_FENCE.get(c.language, '')}\n{c.code}\n{fence}\n")
         return "\n".join(out)
 
     @staticmethod
@@ -298,4 +325,5 @@ class RepoRetriever:
             "end_line": c.end_line,
             "symbol": c.symbol,
             "reason": cand.reason,
+            "tag": c.tag,
         }

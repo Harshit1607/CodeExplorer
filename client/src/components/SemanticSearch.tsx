@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
+import { sourceLink } from '../lib/github';
 
 type SearchMode = 'hybrid' | 'semantic' | 'keyword';
 
@@ -34,6 +35,10 @@ const MODES: { id: SearchMode; label: string; hint: string }[] = [
   { id: 'keyword', label: 'Keyword', hint: 'Names and concepts only' },
 ];
 
+const TYPE_LABELS: Record<string, string> = {
+  function: 'functions', class: 'classes', file: 'files', import: 'imports', docs: 'docs', config: 'config',
+};
+
 const suggestedSearches = [
   { label: 'Authentication', query: 'where is user authentication handled' },
   { label: 'API Endpoints', query: 'http api route handlers' },
@@ -43,15 +48,8 @@ const suggestedSearches = [
   { label: 'Entry Point', query: 'application startup and initialization' },
   { label: 'UI Components', query: 'ui component rendering' },
   { label: 'Tests', query: 'test spec' },
+  { label: 'Deploy', query: 'how to deploy and configure the project' },
 ];
-
-function githubLink(repoMeta: any, r: SearchResult): string | null {
-  const url: string | undefined = repoMeta?.url;
-  if (!url || !url.startsWith('https://github.com/')) return null;
-  const branch = repoMeta?.default_branch || 'HEAD';
-  const lines = r.start_line ? `#L${r.start_line}${r.end_line ? `-L${r.end_line}` : ''}` : '';
-  return `${url.replace(/\.git$/, '').replace(/\/$/, '')}/blob/${branch}/${r.file_path}${lines}`;
-}
 
 export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
   const [query, setQuery] = useState('');
@@ -126,6 +124,8 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
       case 'function': return '⚡';
       case 'class': return '🔷';
       case 'import': return '📦';
+      case 'docs': return '📘';
+      case 'config': return '⚙️';
       default: return '📌';
     }
   };
@@ -136,6 +136,8 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
       case 'function': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300';
       case 'class': return 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300';
       case 'import': return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300';
+      case 'docs': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300';
+      case 'config': return 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300';
       default: return 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300';
     }
   };
@@ -170,7 +172,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
             <span>🔍</span> Semantic Code Search
           </h3>
           <p className="text-sm text-slate-600 dark:text-slate-400">
-            Describe what the code does — results combine vector embeddings of the source with name and concept matching
+            Describe what the code does — results combine vector embeddings of the source, docs and config files with name and concept matching
           </p>
         </div>
 
@@ -321,7 +323,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
                     }`}
                   >
                     <span>{getTypeIcon(type)}</span>
-                    {type}s ({items.length})
+                    {TYPE_LABELS[type] || type} ({items.length})
                   </button>
                 ))}
               </div>
@@ -339,7 +341,7 @@ export default function SemanticSearch({ analysisData }: SemanticSearchProps) {
               <div className="max-h-[600px] overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
                 {filteredResults.map((result, idx) => {
                   const badge = getMatchBadge(result.match);
-                  const link = githubLink(analysisData?.repoMeta, result);
+                  const link = sourceLink(analysisData?.repoMeta, result.file_path, result.start_line, result.end_line);
                   const isOpen = expanded.has(idx);
                   return (
                     <div key={`${result.type}:${result.file_path}:${result.name}:${idx}`} className="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">

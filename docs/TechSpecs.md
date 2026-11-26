@@ -39,9 +39,10 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - File-level dependency graph with circular dependency detection
   - Framework and database detection
 - **Architecture Analyzer**: Generates high-level layered architecture diagrams by classifying files into layers.
-- **AI Analyzer**: Generates automated architectural summaries and insights using LLMs (Groq API).
+- **AI Analyzer**: Generates the architecture report using LLMs (Groq API) from repository metadata plus code excerpts picked by **Report Grounding** (`report_grounding.py`): entry-point main functions, key modules' main classes, detected route handlers, model classes, and setup docs/config, using the vector index when it is searchable (product code is embedded first) and the chunks alone otherwise. Excerpts fit `AI_REPORT_CODE_CHARS` and carry `path (lines a-b)` headers; the model must cite `path:start-end`. Citations are checked against the excerpts (one that overlaps an excerpt is verified, with its range clamped to the excerpt lines): the report returns `sources` and `grounding` (excerpt counts per role, index status, verified `citations`, `unverified` ones, `uncited_sections`, and `spans`: where each citation sits in the report text as UTF-16 offsets), and the UI links only verified citations from those spans without parsing the text itself. The report is written after the static analysis and waits up to `AI_REPORT_INDEX_WAIT_SECONDS` for the index; after that it uses the partial index and says so.
 - **Streaming Pipeline**: Clones (with live progress), analyzes files in parallel, then runs deep analysis while building the vector index concurrently. Emits batched SSE events with monotonic progress; non-fatal problems are `warning` events, only fatal failures are `error`. Sessions are kept in a TTL-evicted store so clients can reconnect (history is replayed) and search/chat can reuse server-side data.
 - **Code Chunker**: Splits source into symbol-level chunks along tree-sitter symbols (doc comments included; large classes/components split into members), with `ast`/regex fallbacks and overlapping windows for oversized segments.
+- **Docs/config chunks** (`doc_files.py`): README*, CONTRIBUTING*, root guides (SETUP.md, DEPLOYMENT.md, ...), `docs/**/*.md|rst|txt`, Dockerfile*, compose*.yml, CI workflows (GitHub Actions, GitLab, CircleCI, ...), `.env.example`-style templates (never `.env`) and Makefile are chunked too, tagged `docs` or `config`; docs split at headings. Capped by `DOC_INDEX_MAX_FILES` / `DOC_INDEX_MAX_CHUNKS` (most useful files first), embedded after product code and before tests/examples, and kept when `MAX_INDEX_CHUNKS` truncates. Chat admits at most 2 of them per answer unless the question is about setup, configuration, tests or deployment; search shows them as `docs` / `config` results, ranked below code for code questions.
 - **Vector Index**: Embeds chunks locally with fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, no API key) into an in-memory numpy matrix per session; brute-force cosine search. Searchable incrementally while it builds.
 - **Semantic Search Service**: Hybrid retrieval — concept-expanded keyword matching (50+ concept categories) fused with vector similarity via weighted reciprocal rank fusion. Identifier-like queries lean on keywords, natural-language queries lean on vectors; tests/examples are mildly down-ranked unless asked for. Falls back to keyword-only when no index is available.
 - **Chat Service (RAG)**: Groq-powered chat (`GROQ_MODEL`, default `openai/gpt-oss-120b`). Each question gets a compact repo overview plus code retrieved for that question by the **RAG Retriever**:
@@ -98,13 +99,14 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
   - `call_graph`: Function call graph (one event)
   - `architecture_ready`: ReactFlow architecture data
   - `quickstart_ready`: README, package manager, run scripts
-  - `ai_report_ready`: AI-generated architecture summary
+  - `ai_report_started`: The report is being written (`waiting_for_index`, `max_wait_seconds`)
+  - `ai_report_ready`: AI-generated architecture summary with `sources` and `grounding` (see AI Analyzer)
   - `search_index_progress` / `search_index_ready`: Vector index build status (runs concurrently)
   - `warning`: Non-fatal problems (analysis continues); `error`: fatal failure; `analysis_complete`: done
 - `GET /api/analyze/{session_id}/status` — Pipeline and search-index status for a session.
 - `POST /api/search` — Hybrid semantic search. Body: `query`, `session_id` (preferred), optional `mode` (`hybrid` | `semantic` | `keyword`), `limit`, and optional `analysis_data` fallback (not needed while the session is alive; an unknown `session_id` without it returns **404**, and the client then resends once with it). Returns ranked results with match type, similarity, line range, and code snippet.
 - `GET /api/search/status?session_id=` — Vector index status.
-- `POST /api/chat` — Retrieval-augmented Q&A. Body: `question`, `session_id` (preferred), optional `chat_history` (`user` / `assistant` messages; other roles are ignored), optional slim `analysis_data` fallback (same rule as search: only sent after a **404** for an expired session). Returns `response`, `sources` (`file`, `start_line`, `end_line`, `symbol`, `reason`) and `retrieval` (`semantic` | `files`).
+- `POST /api/chat` — Retrieval-augmented Q&A. Body: `question`, `session_id` (preferred), optional `chat_history` (`user` / `assistant` messages; other roles are ignored), optional slim `analysis_data` fallback (same rule as search: only sent after a **404** for an expired session). Returns `response`, `sources` (`file`, `start_line`, `end_line`, `symbol`, `reason`, `tag` = `code` | `docs` | `config`) and `retrieval` (`semantic` | `files`).
 - `GET /api/health` — Health check (reports whether vector search is enabled).
 
 ---
@@ -117,7 +119,7 @@ Frontend (React + Vite) communicates with Backend (FastAPI) over HTTP APIs.
 - Loading state and error handling
 
 ### Dashboard (Tabbed Interface — 13 Tabs)
-1. **AI Report** — Automated architecture overview, key component identification, and codebase insights generated by AI (Stage 4)
+1. **AI Report** — Architecture overview written from retrieved code excerpts (Stage 4); the headline states what it was written from (excerpt count, roles, partial index), verified `path:line` citations link to GitHub, unverifiable ones are dotted, and the excerpts are listed as source chips
 2. **Quick Start** — Auto-generated setup and installation guide with language/framework detection, package manager suggestions, install/run commands, Docker/Makefile support, and entry point listing
 3. **Chat** — Retrieval-augmented chat with per-answer source chips (GitHub deep links to exact lines), code-block rendering, index status, suggested questions, chat history, rate-limit handling, and retry functionality
 4. **Search** — Hybrid vector + keyword code search with index build status, mode toggle (hybrid/semantic/keyword), type filtering, expandable code snippets with line numbers, and GitHub deep links
@@ -320,5 +322,5 @@ Request hardening:
 - One repository analyzed at a time
 - Public repositories only
 - No authentication or persistence across sessions
-- Chat context budget is ~14k characters (`CHAT_CONTEXT_CHARS`) because the Groq free tier allows ~8k tokens/minute including the answer
+- Chat context budget is ~14k characters (`CHAT_CONTEXT_CHARS`) because the Groq free tier allows ~8k tokens/minute including the answer; for the same reason the AI report sees ~8k characters of code excerpts (`AI_REPORT_CODE_CHARS`), not the whole repository
 - Chat subject to rate limiting (per-client limits and the shared Groq API quota)

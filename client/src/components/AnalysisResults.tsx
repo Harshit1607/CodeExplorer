@@ -161,9 +161,12 @@ export default function AnalysisResults({ state }: AnalysisResultsProps) {
           )}
 
           {activeTab === 'ai' && (
-            <AIReportSection 
-              report={state.aiReport} 
-              isLoading={state.status === 'streaming'} 
+            <AIReportSection
+              report={state.aiReport}
+              isLoading={state.status === 'streaming'}
+              repoMeta={state.repoMeta}
+              pending={state.aiReportPending}
+              searchIndex={state.searchIndex}
             />
           )}
 

@@ -100,9 +100,14 @@ _LOW_PRIORITY_PARTS = ("test", "spec", "__tests__", "__mocks__", "fixture", "exa
 
 
 def _priority(chunk: CodeChunk) -> int:
-    """Lower is indexed first. Tests/examples/docs go last (they're dropped first if capped)."""
+    """
+    Lower is indexed first: product code, then docs/config files (already capped by
+    doc_files.py), then tests/examples and code under docs/ (dropped first if capped).
+    """
+    if chunk.tag != "code":
+        return 1
     path = chunk.file.lower()
-    return 1 if any(part in path for part in _LOW_PRIORITY_PARTS) else 0
+    return 2 if any(part in path for part in _LOW_PRIORITY_PARTS) else 0
 
 
 class VectorIndex:
@@ -151,7 +156,10 @@ class VectorIndex:
 
         chunks = sorted(chunks, key=_priority)  # stable: keeps file order within a tier
         if len(chunks) > config.MAX_INDEX_CHUNKS:
-            chunks = chunks[:config.MAX_INDEX_CHUNKS]
+            # Docs/config chunks are few and pre-capped: keep them, drop the lowest-priority code.
+            docs = [c for c in chunks if c.tag != "code"][:config.MAX_INDEX_CHUNKS]
+            code = [c for c in chunks if c.tag == "code"][:config.MAX_INDEX_CHUNKS - len(docs)]
+            chunks = sorted(code + docs, key=_priority)
             self.truncated = True
 
         self.total_chunks = len(chunks)

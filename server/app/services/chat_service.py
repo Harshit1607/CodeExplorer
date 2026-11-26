@@ -256,7 +256,7 @@ def build_chat_context(question: str, history: Optional[List[dict]], analysis_da
 
     context = overview
     if code:
-        heading = ("## Relevant code (retrieved for this question; excerpts, not whole files)"
+        heading = ("## Relevant code and docs (retrieved for this question; excerpts, not whole files)"
                    if mode == "semantic" else "## Source code (selected files)")
         context += f"\n\n{heading}\n\n{code}"
     return context, sources, mode
